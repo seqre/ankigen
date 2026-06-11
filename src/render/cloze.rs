@@ -25,21 +25,20 @@ pub fn expand(field: &str) -> Result<String, MixedCloze> {
             rest = &rest[1..];
             continue;
         }
-        if !in_code {
-            if let Some(after_open) = rest.strip_prefix("==") {
-                if let Some(close) = after_open.find("==") {
-                    let inner = &after_open[..close];
-                    out.push_str("{{c");
-                    out.push_str(&n.to_string());
-                    out.push_str("::");
-                    out.push_str(inner);
-                    out.push_str("}}");
-                    n += 1;
-                    found_auto = true;
-                    rest = &after_open[close + 2..];
-                    continue;
-                }
-            }
+        if !in_code
+            && let Some(after_open) = rest.strip_prefix("==")
+            && let Some(close) = after_open.find("==")
+        {
+            let inner = &after_open[..close];
+            out.push_str("{{c");
+            out.push_str(&n.to_string());
+            out.push_str("::");
+            out.push_str(inner);
+            out.push_str("}}");
+            n += 1;
+            found_auto = true;
+            rest = &after_open[close + 2..];
+            continue;
         }
         out.push(ch);
         rest = &rest[ch.len_utf8()..];
@@ -72,12 +71,11 @@ pub fn has_shorthand_cloze(s: &str) -> bool {
     while let Some(ch) = rest.chars().next() {
         if ch == '`' {
             in_code = !in_code;
-        } else if !in_code {
-            if let Some(after) = rest.strip_prefix("==") {
-                if after.contains("==") {
-                    return true;
-                }
-            }
+        } else if !in_code
+            && let Some(after) = rest.strip_prefix("==")
+            && after.contains("==")
+        {
+            return true;
         }
         rest = &rest[ch.len_utf8()..];
     }
@@ -90,12 +88,18 @@ mod tests {
 
     #[test]
     fn numbers_left_to_right() {
-        assert_eq!(expand("a ==b== and ==c==").unwrap(), "a {{c1::b}} and {{c2::c}}");
+        assert_eq!(
+            expand("a ==b== and ==c==").unwrap(),
+            "a {{c1::b}} and {{c2::c}}"
+        );
     }
 
     #[test]
     fn hint_passthrough() {
-        assert_eq!(expand("==Paris::capital==").unwrap(), "{{c1::Paris::capital}}");
+        assert_eq!(
+            expand("==Paris::capital==").unwrap(),
+            "{{c1::Paris::capital}}"
+        );
     }
 
     #[test]

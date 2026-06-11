@@ -18,6 +18,11 @@ pub fn mint_card_id() -> Ulid {
 
 /// The Anki note GUID: `ankigen::<model>::<ulid>`.
 pub fn guid_for(id: &Ulid, model: ModelKey) -> String {
+    guid_for_str(&id.to_string(), model)
+}
+
+/// Like [`guid_for`] but for an id already in string form (as persisted).
+pub fn guid_for_str(id: &str, model: ModelKey) -> String {
     format!("ankigen::{}::{}", model.as_str(), id)
 }
 

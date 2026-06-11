@@ -116,10 +116,10 @@ fn list_item(line: &str) -> Option<(bool, &str)> {
         return Some((false, rest));
     }
     let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
-    if digits > 0 {
-        if let Some(rest) = t[digits..].strip_prefix(". ") {
-            return Some((true, rest));
-        }
+    if digits > 0
+        && let Some(rest) = t[digits..].strip_prefix(". ")
+    {
+        return Some((true, rest));
     }
     None
 }
@@ -218,7 +218,9 @@ fn resolve_src(ctx: &mut RenderCtx, path: &str) -> Result<String> {
 }
 
 fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn escape_attr(s: &str) -> String {

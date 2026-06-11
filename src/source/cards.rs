@@ -26,10 +26,10 @@ pub fn parse(input: &str, path: &Path) -> Result<ParsedFile> {
                 topic: t,
                 tags: mut tg,
             } => {
-                if let Some(t) = t {
-                    if topic.is_none() {
-                        topic = Some(t);
-                    }
+                if let Some(t) = t
+                    && topic.is_none()
+                {
+                    topic = Some(t);
                 }
                 file_tags.append(&mut tg);
             }
@@ -141,7 +141,11 @@ fn marker(line: &str) -> Option<(Marker, &str)> {
 }
 
 fn parse_id_comment(line: &str) -> Option<&str> {
-    let inner = line.trim().strip_prefix("<!--")?.strip_suffix("-->")?.trim();
+    let inner = line
+        .trim()
+        .strip_prefix("<!--")?
+        .strip_suffix("-->")?
+        .trim();
     let id = inner.strip_prefix("@id")?.trim();
     (!id.is_empty()).then_some(id)
 }
@@ -154,11 +158,11 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
 
     // Optional leading id comment.
     let mut id: Option<String> = None;
-    if let Some(first) = lines.peek() {
-        if let Some(found) = parse_id_comment(first) {
-            id = Some(found.to_string());
-            lines.next();
-        }
+    if let Some(first) = lines.peek()
+        && let Some(found) = parse_id_comment(first)
+    {
+        id = Some(found.to_string());
+        lines.next();
     }
 
     let (mut q, mut a, mut e, mut t) = (None, None, None, None);
@@ -309,7 +313,10 @@ mod tests {
         let f = parse_str("q: Q1\na: A1\n\nq: Q2\na: A2\ne: E2\n\nq: Q3\nt: 200\n");
         assert_eq!(f.cards.len(), 3);
         assert!(matches!(f.cards[0].spec.kind, CardKindSpec::Basic { .. }));
-        assert!(matches!(f.cards[1].spec.kind, CardKindSpec::BasicExample { .. }));
+        assert!(matches!(
+            f.cards[1].spec.kind,
+            CardKindSpec::BasicExample { .. }
+        ));
         assert!(matches!(f.cards[2].spec.kind, CardKindSpec::TypeIn { .. }));
     }
 

@@ -16,12 +16,6 @@ pub fn build_note(key: ModelKey, fields: &[String], guid: &str, tags: &[String])
     let model = models::build(key);
     let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
     let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
-    let note = Note::new_with_options(
-        model,
-        field_refs,
-        Some(true),
-        Some(tag_refs),
-        Some(guid),
-    )?;
+    let note = Note::new_with_options(model, field_refs, Some(true), Some(tag_refs), Some(guid))?;
     Ok(note)
 }

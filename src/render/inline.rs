@@ -15,9 +15,17 @@ pub enum Inline {
     Bold(Vec<Inline>),
     Italic(Vec<Inline>),
     Code(String),
-    Link { text: String, url: String },
-    Image { path: String, caption: Option<String> },
-    Sound { path: String },
+    Link {
+        text: String,
+        url: String,
+    },
+    Image {
+        path: String,
+        caption: Option<String>,
+    },
+    Sound {
+        path: String,
+    },
     Break,
 }
 
@@ -32,8 +40,9 @@ fn is_special(c: char) -> bool {
 /// so this consumes the whole input.
 pub fn parse_inlines(input: &str) -> Vec<Inline> {
     let mut s = input;
-    let nodes: Vec<Inline> =
-        winnow::combinator::repeat(0.., element).parse_next(&mut s).unwrap_or_default();
+    let nodes: Vec<Inline> = winnow::combinator::repeat(0.., element)
+        .parse_next(&mut s)
+        .unwrap_or_default();
     merge_text(nodes)
 }
 
@@ -142,7 +151,10 @@ mod tests {
 
     #[test]
     fn plain_text() {
-        assert_eq!(parse_inlines("hello world"), vec![Inline::Text("hello world".into())]);
+        assert_eq!(
+            parse_inlines("hello world"),
+            vec![Inline::Text("hello world".into())]
+        );
     }
 
     #[test]
@@ -179,15 +191,23 @@ mod tests {
     fn media_tokens() {
         assert_eq!(
             parse_inlines("[image:dog.png]"),
-            vec![Inline::Image { path: "dog.png".into(), caption: None }]
+            vec![Inline::Image {
+                path: "dog.png".into(),
+                caption: None
+            }]
         );
         assert_eq!(
             parse_inlines("[image:A dog:dog.png]"),
-            vec![Inline::Image { path: "dog.png".into(), caption: Some("A dog".into()) }]
+            vec![Inline::Image {
+                path: "dog.png".into(),
+                caption: Some("A dog".into())
+            }]
         );
         assert_eq!(
             parse_inlines("[sound:bark.mp3]"),
-            vec![Inline::Sound { path: "bark.mp3".into() }]
+            vec![Inline::Sound {
+                path: "bark.mp3".into()
+            }]
         );
     }
 
@@ -195,7 +215,10 @@ mod tests {
     fn link_vs_literal_bracket() {
         assert_eq!(
             parse_inlines("[here](http://x)"),
-            vec![Inline::Link { text: "here".into(), url: "http://x".into() }]
+            vec![Inline::Link {
+                text: "here".into(),
+                url: "http://x".into()
+            }]
         );
         // A bare bracket is literal text.
         assert_eq!(parse_inlines("[nope]"), vec![Inline::Text("[nope]".into())]);
@@ -203,6 +226,9 @@ mod tests {
 
     #[test]
     fn escapes() {
-        assert_eq!(parse_inlines(r"\*not bold\*"), vec![Inline::Text("*not bold*".into())]);
+        assert_eq!(
+            parse_inlines(r"\*not bold\*"),
+            vec![Inline::Text("*not bold*".into())]
+        );
     }
 }

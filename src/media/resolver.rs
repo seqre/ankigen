@@ -30,10 +30,7 @@ impl MediaResolver {
         let bytes = std::fs::read(&abs)?;
         let hash = blake3::hash(&bytes);
         let prefix = &hash.to_hex()[..8];
-        let orig = abs
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("media");
+        let orig = abs.file_name().and_then(|s| s.to_str()).unwrap_or("media");
         let basename = format!("{prefix}-{orig}");
         self.by_abs.insert(abs.clone(), basename.clone());
         // Package each distinct basename exactly once.
