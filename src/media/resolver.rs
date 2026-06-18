@@ -40,8 +40,10 @@ impl MediaResolver {
         Ok(basename)
     }
 
-    /// Absolute paths to hand to `Package::new`, as `&str`.
-    pub fn media_paths(&self) -> Vec<&str> {
-        self.files.iter().filter_map(|p| p.to_str()).collect()
+    /// `(original_abs_path, package_basename)` pairs for all collected media.
+    pub fn media_entries(&self) -> impl Iterator<Item = (&Path, &str)> {
+        self.files
+            .iter()
+            .map(|p| (p.as_path(), self.by_abs[p].as_str()))
     }
 }

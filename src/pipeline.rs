@@ -138,7 +138,21 @@ fn emit_package(
             d
         })
         .collect();
-    let media = resolver.media_paths();
+
+    // genanki uses `path.file_name()` as the media filename inside the apkg,
+    // so we copy each file into a tempdir under its hashed basename so that
+    // what genanki records matches the `<img src="…">` we emitted.
+    let tmp = tempfile::tempdir()
+        .map_err(|e| AnkigenError::Io(format!("tempdir: {e}")))?;
+    let mut staged: Vec<PathBuf> = Vec::new();
+    for (src, basename) in resolver.media_entries() {
+        let dst = tmp.path().join(basename);
+        std::fs::copy(src, &dst)
+            .map_err(|e| AnkigenError::Io(format!("copying media {}: {e}", src.display())))?;
+        staged.push(dst);
+    }
+
+    let media: Vec<&str> = staged.iter().filter_map(|p| p.to_str()).collect();
     let mut package = Package::new(genanki_decks, media)?;
     let out = output
         .to_str()
