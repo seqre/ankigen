@@ -50,7 +50,7 @@ pub fn build(key: ModelKey) -> Model {
         ModelKey::Basic => Model::new(
             MODEL_BASIC,
             "ankigen Basic",
-            vec![Field::new("Front"), Field::new("Back")],
+            vec![Field::new("Front"), Field::new("Back"), Field::new("ID")],
             vec![
                 Template::new("Card 1")
                     .qfmt("{{Front}}")
@@ -58,7 +58,7 @@ pub fn build(key: ModelKey) -> Model {
             ],
         )
         .css(CSS)
-        .sort_field_index(0),
+        .sort_field_index(2),
 
         ModelKey::BasicExample => Model::new(
             MODEL_BASIC_EXAMPLE,
@@ -67,6 +67,7 @@ pub fn build(key: ModelKey) -> Model {
                 Field::new("Front"),
                 Field::new("Back"),
                 Field::new("Example"),
+                Field::new("ID"),
             ],
             vec![
                 Template::new("Card 1").qfmt("{{Front}}").afmt(
@@ -75,12 +76,12 @@ pub fn build(key: ModelKey) -> Model {
             ],
         )
         .css(CSS)
-        .sort_field_index(0),
+        .sort_field_index(3),
 
         ModelKey::TypeIn => Model::new(
             MODEL_TYPEIN,
             "ankigen Type-in",
-            vec![Field::new("Front"), Field::new("Answer")],
+            vec![Field::new("Front"), Field::new("Answer"), Field::new("ID")],
             vec![
                 Template::new("Card 1")
                     .qfmt(r#"{{Front}}<br>{{type:Answer}}"#)
@@ -88,12 +89,12 @@ pub fn build(key: ModelKey) -> Model {
             ],
         )
         .css(CSS)
-        .sort_field_index(0),
+        .sort_field_index(2),
 
         ModelKey::Cloze => Model::new(
             MODEL_CLOZE,
             "ankigen Cloze",
-            vec![Field::new("Text"), Field::new("Back Extra")],
+            vec![Field::new("Text"), Field::new("Back Extra"), Field::new("ID")],
             vec![
                 Template::new("Cloze").qfmt("{{cloze:Text}}").afmt(
                     r#"{{cloze:Text}}{{#Back Extra}}<div class="extra">{{Back Extra}}</div>{{/Back Extra}}"#,
@@ -102,6 +103,6 @@ pub fn build(key: ModelKey) -> Model {
         )
         .css(CSS)
         .model_type(ModelType::Cloze)
-        .sort_field_index(0),
+        .sort_field_index(2),
     }
 }

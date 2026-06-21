@@ -60,11 +60,12 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
         let deck_id = registry.id_for(dir, &name);
 
         for card in &l.parsed.cards {
-            let (key, fields) = render_card(card, file, &l.parsed.text, &mut resolver)?;
+            let (key, mut fields) = render_card(card, file, &l.parsed.text, &mut resolver)?;
             let mut tags = l.parsed.file_tags.clone();
             tags.extend(card.spec.tags.iter().cloned());
             let id = card.spec.id.as_deref().expect("id minted above");
             let guid = guid_for_str(id, key);
+            fields.push(id.to_string());
             let note = build_note(key, &fields, &guid, &tags)?;
             decks
                 .entry(name.clone())
