@@ -72,4 +72,15 @@ impl ModelKey {
             ModelKey::TypeIn => "type-in",
         }
     }
+
+    /// Inverse of [`ModelKey::as_str`]: parse a persisted model key.
+    pub fn parse(s: &str) -> Option<ModelKey> {
+        match s {
+            "basic" => Some(ModelKey::Basic),
+            "basic-example" => Some(ModelKey::BasicExample),
+            "cloze" => Some(ModelKey::Cloze),
+            "type-in" => Some(ModelKey::TypeIn),
+            _ => None,
+        }
+    }
 }

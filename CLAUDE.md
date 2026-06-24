@@ -32,8 +32,16 @@ tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
   duplicate cards. GUID format is `ankigen::<model>::<ulid>`.
 - **Model ids and field lists are frozen** (`anki/models.rs`). Changing a model
   id, a `ModelKey::as_str()`, or a field list orphans every existing note.
-- **Write-back is insert-only, atomic, idempotent.** `@id` goes at the *start*
-  of a block; a rebuild with all ids present must leave files byte-identical.
+- **Write-back is insert + one-time `model=` pin, atomic, idempotent.** `@id`
+  goes at the *start* of a block. A `q:`/`a:` card's id line also carries a
+  `model=<key>` suffix; legacy bare-`@id` cards get this suffix added by a single
+  in-place line rewrite on first rebuild. Once every card has its id (and
+  `model=` where due), a rebuild must leave files byte-identical.
+- **`q:`/`a:` (and `q:`/`a:`/`e:`) both use the Basic+Example model for new
+  cards.** The `model=` marker is the durable source of truth for a `q:`/`a:`
+  card's note type — never re-infer it from `id_present` (that flag flips to
+  true after the first build and would orphan cards). The legacy `Basic` model
+  is kept only for cards minted before the unification (`model=basic`).
 - **Deck ids live in `deck-id.txt` per directory** and card ids in `@id`. Both
   are committed by users; treat them as source of truth.
 

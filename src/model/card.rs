@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use super::spec::CardSpec;
+use super::spec::{CardSpec, ModelKey};
 
 /// A byte range into a single source file (plus a 1-based line for messages).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +20,15 @@ pub struct ParsedCard {
     pub block_span: SourceSpan,
     /// `false` ⇒ this card had no `<!-- @id -->` and one must be injected.
     pub id_present: bool,
+    /// Span of the existing `<!-- @id … -->` line, if present. Used to rewrite
+    /// that line in place when upgrading it with a `model=` suffix.
+    pub id_span: Option<SourceSpan>,
+    /// The `model=<key>` suffix parsed from the `@id` comment, if present. This
+    /// is the durable, source-of-truth note type for ambiguous `q:/a:` cards.
+    pub model_marker: Option<ModelKey>,
+    /// The note type resolved for this card by the pipeline (see
+    /// `pipeline::resolve_models`). `None` until resolved.
+    pub resolved_model: Option<ModelKey>,
 }
 
 #[derive(Clone, Debug)]

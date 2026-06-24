@@ -30,10 +30,14 @@ field continues onto following lines until the next marker or a blank line.
 
 | You write… | Card type |
 |---|---|
-| `q:` + `a:` | Basic |
+| `q:` + `a:` | Basic + Example (empty example) |
 | `q:` + `a:` + `e:` | Basic + Example |
 | `q:` + `t:` | Type-in (`{{type:Answer}}`) |
 | `q:` with `==…==` or `{{c1::…}}` | Cloze (optional `e:` → *Back Extra*) |
+
+`q:`+`a:` and `q:`+`a:`+`e:` share one note type, so adding or removing an
+example never duplicates the card. (Cards built by older ankigen versions stay
+on the legacy *Basic* note type — see below.)
 
 ```
 topic: Networking
@@ -105,7 +109,9 @@ cards/CS/networking.md  (topic: Networking) → deck  CS::Networking
 `ankigen` writes two kinds of id back into your source tree. **Commit them to
 version control** so your decks stay stable across machines and rebuilds:
 
-- `<!-- @id ULID -->` — one per card, at the top of its block.
+- `<!-- @id ULID -->` — one per card, at the top of its block. A `q:`/`a:`
+  card also carries a `model=<key>` suffix (`<!-- @id ULID model=basic-example -->`)
+  pinning its note type so it can never silently change.
 - `deck-id.txt` — one per directory, mapping deck path → a stable deck id.
 
 Deleting an id starts that card/deck fresh (the old one is orphaned in Anki).
@@ -113,7 +119,10 @@ The note GUID is simply `ankigen::<model>::<ulid>`.
 
 > **Note types are frozen.** The four models (Basic, Basic+Example, Type-in,
 > Cloze) have fixed ids and field lists. Anki refuses to update notes whose note
-> type changed, so these never change.
+> type changed, so these never change. New `q:`/`a:` cards use *Basic+Example*;
+> the *Basic* model is retained only so decks built by earlier versions keep
+> updating in place. On the first rebuild after upgrading, each legacy `q:`/`a:`
+> card's `@id` line is upgraded once to `model=basic` to pin it.
 
 ## CLI
 

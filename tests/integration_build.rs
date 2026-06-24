@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
-use ankigen::anki::models::{MODEL_BASIC, MODEL_CLOZE};
+use ankigen::anki::models::{MODEL_BASIC, MODEL_BASIC_EXAMPLE, MODEL_CLOZE};
 use ankigen::pipeline::{BuildOptions, build};
 
 struct NoteRow {
@@ -74,25 +74,30 @@ fn builds_notes_and_keeps_guid_on_edit() {
     let notes = read_notes(&out);
     assert_eq!(notes.len(), 2, "two cards");
 
+    // A brand-new `q:/a:` card unifies on the Basic+Example note type.
     let basic = notes
         .iter()
-        .find(|n| n.mid == MODEL_BASIC)
-        .expect("basic note");
+        .find(|n| n.mid == MODEL_BASIC_EXAMPLE)
+        .expect("basic+example note");
     let cloze = notes
         .iter()
         .find(|n| n.mid == MODEL_CLOZE)
         .expect("cloze note");
 
-    assert!(basic.guid.starts_with("ankigen::basic::"));
+    assert!(basic.guid.starts_with("ankigen::basic-example::"));
     assert_eq!(basic.tags.trim(), "net");
     assert!(basic.flds.contains("HyperText Transfer Protocol"));
     assert!(cloze.flds.contains("{{c1::SYN}}"), "cloze auto-numbered");
 
     let basic_guid_before = basic.guid.clone();
 
-    // Edit the card's *content* but keep its `@id` (written back on build 1).
+    // The id line is written back pinned to the resolved note type.
     let text = std::fs::read_to_string(&note_file).unwrap();
-    assert!(text.contains("<!-- @id"), "ids were written back");
+    assert!(
+        text.contains("<!-- @id") && text.contains("model=basic-example"),
+        "id + model marker written back"
+    );
+    // Edit the card's *content* but keep its `@id`.
     let edited = text.replace(
         "HyperText Transfer Protocol",
         "HyperText Transfer Protocol (a stateless protocol)",
@@ -102,7 +107,10 @@ fn builds_notes_and_keeps_guid_on_edit() {
     build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
 
     let notes2 = read_notes(&out);
-    let basic2 = notes2.iter().find(|n| n.mid == MODEL_BASIC).unwrap();
+    let basic2 = notes2
+        .iter()
+        .find(|n| n.mid == MODEL_BASIC_EXAMPLE)
+        .unwrap();
     assert_eq!(
         basic2.guid, basic_guid_before,
         "editing content must NOT change the GUID (Anki updates in place)"
@@ -111,6 +119,41 @@ fn builds_notes_and_keeps_guid_on_edit() {
         basic2.flds.contains("stateless protocol"),
         "content updated"
     );
+}
+
+#[test]
+fn legacy_basic_card_stays_basic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    let note_file = cards.join("legacy.cards");
+    // A card built by an earlier ankigen: a bare `@id`, no `model=` marker.
+    std::fs::write(
+        &note_file,
+        "<!-- @id 01ARZ3NDEKTSV4RRFFQ69G5FAV -->\nq: Q\na: A\n",
+    )
+    .unwrap();
+    let out = tmp.path().join("deck.apkg");
+
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+
+    let notes = read_notes(&out);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].mid, MODEL_BASIC, "legacy card keeps the Basic model");
+    assert_eq!(notes[0].guid, "ankigen::basic::01ARZ3NDEKTSV4RRFFQ69G5FAV");
+
+    // The legacy line is upgraded once to pin the note type.
+    let text = std::fs::read_to_string(&note_file).unwrap();
+    assert_eq!(
+        text,
+        "<!-- @id 01ARZ3NDEKTSV4RRFFQ69G5FAV model=basic -->\nq: Q\na: A\n"
+    );
+
+    // Rebuild: marker present ⇒ source byte-identical and GUID unchanged.
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+    assert_eq!(std::fs::read_to_string(&note_file).unwrap(), text);
+    let notes2 = read_notes(&out);
+    assert_eq!(notes2[0].guid, "ankigen::basic::01ARZ3NDEKTSV4RRFFQ69G5FAV");
 }
 
 #[test]

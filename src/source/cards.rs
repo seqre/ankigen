@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::error::{AnkigenError, Result};
 use crate::model::card::SourceSpan;
-use crate::model::{CardKindSpec, CardSpec, ParsedCard, ParsedFile};
+use crate::model::{CardKindSpec, CardSpec, ModelKey, ParsedCard, ParsedFile};
 use crate::render::cloze;
 
 pub fn parse(input: &str, path: &Path) -> Result<ParsedFile> {
@@ -140,14 +140,19 @@ fn marker(line: &str) -> Option<(Marker, &str)> {
     None
 }
 
-fn parse_id_comment(line: &str) -> Option<&str> {
+/// Parse a leading `<!-- @id <ulid> [model=<key>] -->` comment, returning the
+/// id and the optional raw `model=` token.
+fn parse_id_comment(line: &str) -> Option<(&str, Option<&str>)> {
     let inner = line
         .trim()
         .strip_prefix("<!--")?
         .strip_suffix("-->")?
         .trim();
-    let id = inner.strip_prefix("@id")?.trim();
-    (!id.is_empty()).then_some(id)
+    let rest = inner.strip_prefix("@id")?.trim();
+    let mut parts = rest.split_whitespace();
+    let id = parts.next().filter(|s| !s.is_empty())?;
+    let model = parts.find_map(|tok| tok.strip_prefix("model="));
+    Some((id, model))
 }
 
 fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
@@ -156,12 +161,30 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
 
     let mut lines = block.text.lines().peekable();
 
-    // Optional leading id comment.
+    // Optional leading id comment, possibly carrying a `model=<key>` suffix.
     let mut id: Option<String> = None;
+    let mut model_marker: Option<ModelKey> = None;
+    let mut id_span: Option<SourceSpan> = None;
     if let Some(first) = lines.peek()
-        && let Some(found) = parse_id_comment(first)
+        && let Some((found, model_tok)) = parse_id_comment(first)
     {
         id = Some(found.to_string());
+        if let Some(tok) = model_tok {
+            match ModelKey::parse(tok) {
+                Some(m) => model_marker = Some(m),
+                None => {
+                    return Err(err(
+                        &format!("unknown `model={tok}` in the `@id` comment"),
+                        Some("expected `model=basic` or `model=basic-example`"),
+                    ));
+                }
+            }
+        }
+        id_span = Some(SourceSpan {
+            byte_start: span.byte_start,
+            byte_len: first.len(),
+            line_start: span.line_start,
+        });
         lines.next();
     }
 
@@ -289,6 +312,9 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
         },
         block_span: span,
         id_present,
+        id_span,
+        model_marker,
+        resolved_model: None,
     }))
 }
 
@@ -318,6 +344,27 @@ mod tests {
             CardKindSpec::BasicExample { .. }
         ));
         assert!(matches!(f.cards[2].spec.kind, CardKindSpec::TypeIn { .. }));
+    }
+
+    #[test]
+    fn parses_model_marker() {
+        let f = parse_str("<!-- @id 01ABC model=basic -->\nq: Q\na: A\n");
+        assert_eq!(f.cards[0].spec.id.as_deref(), Some("01ABC"));
+        assert_eq!(f.cards[0].model_marker, Some(ModelKey::Basic));
+        assert!(f.cards[0].id_present);
+
+        let g = parse_str("<!-- @id 01ABC -->\nq: Q\na: A\n");
+        assert_eq!(g.cards[0].model_marker, None);
+        assert!(g.cards[0].id_span.is_some());
+    }
+
+    #[test]
+    fn unknown_model_marker_errors() {
+        let r = parse(
+            "<!-- @id 01ABC model=nope -->\nq: Q\na: A\n",
+            &PathBuf::from("t.cards"),
+        );
+        assert!(r.is_err());
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
     let source = CardsSource;
     let mut loaded = load_all(&source, paths)?;
     mint_and_check_ids(&mut loaded)?;
+    resolve_models(&mut loaded)?;
 
     let persist = opts.write_back && !opts.check;
     if persist {
@@ -114,6 +115,40 @@ fn mint_and_check_ids(loaded: &mut [Loaded]) -> Result<()> {
     Ok(())
 }
 
+/// Resolve each card's note type, honoring the durable `model=` marker and
+/// migrating legacy `q:/a:` cards. Only `CardKindSpec::Basic` is ambiguous:
+/// with no marker, a card that already had an `@id` predates the Basic/
+/// Basic+Example unification (⇒ `Basic`), while a brand-new card unifies on
+/// `BasicExample` (rendered with an empty example). The resolved key is the
+/// single source of truth shared by write-back and rendering.
+fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
+    for l in loaded.iter_mut() {
+        for card in &mut l.parsed.cards {
+            let model = match &card.spec.kind {
+                CardKindSpec::Basic { .. } => match card.model_marker {
+                    Some(m) => m,
+                    None if card.id_present => ModelKey::Basic,
+                    None => ModelKey::BasicExample,
+                },
+                CardKindSpec::BasicExample { .. }
+                    if card.model_marker == Some(ModelKey::Basic) =>
+                {
+                    return Err(AnkigenError::parse(
+                        &l.parsed.path,
+                        &l.parsed.text,
+                        card.block_span,
+                        "card has an example but is pinned to the legacy Basic note type",
+                        Some("remove the `e:` example, or drop the `model=basic` marker to migrate it"),
+                    ));
+                }
+                other => other.model_key(),
+            };
+            card.resolved_model = Some(model);
+        }
+    }
+    Ok(())
+}
+
 fn write_back_ids(source: &CardsSource, loaded: &[Loaded]) -> Result<()> {
     for l in loaded {
         if let Some(new_text) = source.persist_ids(&l.input, &l.parsed) {
@@ -168,7 +203,7 @@ fn render_card(
     text: &str,
     resolver: &mut MediaResolver,
 ) -> Result<(ModelKey, Vec<String>)> {
-    let key = card.spec.kind.model_key();
+    let key = card.resolved_model.expect("model resolved above");
     let src_dir = file.parent().unwrap_or_else(|| Path::new("."));
     let mut ctx = RenderCtx {
         file,
@@ -179,10 +214,16 @@ fn render_card(
     };
     let fields = match &card.spec.kind {
         CardKindSpec::Basic { question, answer } => {
-            vec![
+            let mut fields = vec![
                 render_rich(question, &mut ctx)?,
                 render_rich(answer, &mut ctx)?,
-            ]
+            ];
+            // New `q:/a:` cards unify on Basic+Example with an empty example;
+            // legacy cards stay on the 2-field Basic note type.
+            if key == ModelKey::BasicExample {
+                fields.push(String::new());
+            }
+            fields
         }
         CardKindSpec::BasicExample {
             question,
