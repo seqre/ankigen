@@ -18,6 +18,7 @@ pub mod media;
 pub mod model;
 pub mod pipeline;
 pub mod render;
+pub mod report;
 pub mod source;
 pub mod util;
 
@@ -34,6 +35,7 @@ pub fn run(cli: cli::Cli) -> Result<()> {
                 deck_prefix: args.deck,
                 check: args.check,
                 write_back: !args.no_write_back,
+                verbose: args.verbose,
             };
             pipeline::build(&args.paths, &opts)
         }

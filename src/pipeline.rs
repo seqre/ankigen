@@ -14,8 +14,15 @@ use crate::id::{guid_for_str, mint_card_id};
 use crate::media::MediaResolver;
 use crate::model::{CardKindSpec, ModelKey, ParsedCard, ParsedFile};
 use crate::render::{RenderCtx, render_cloze, render_rich};
+use crate::report::Reporter;
 use crate::source::{CardSource, CardsSource};
 use crate::util::atomic_write;
+
+/// File extensions treated as media when scanning for orphaned files.
+const MEDIA_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "tiff", "tif", "mp3", "ogg", "wav", "m4a",
+    "flac", "opus", "mp4", "webm", "mov",
+];
 
 pub struct BuildOptions {
     pub output: PathBuf,
@@ -24,6 +31,8 @@ pub struct BuildOptions {
     pub check: bool,
     /// Persist minted card ids and `deck-id.txt`.
     pub write_back: bool,
+    /// Output verbosity: 0 silent, 1 summary, 2+ per-item (to stderr).
+    pub verbose: u8,
 }
 
 struct Loaded {
@@ -33,20 +42,22 @@ struct Loaded {
 }
 
 pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
+    let mut report = Reporter::new(opts.verbose);
     let source = CardsSource;
-    let mut loaded = load_all(&source, paths)?;
-    mint_and_check_ids(&mut loaded)?;
+    let mut loaded = load_all(&source, paths, &mut report)?;
+    mint_and_check_ids(&mut loaded, &mut report)?;
     resolve_models(&mut loaded)?;
 
     let persist = opts.write_back && !opts.check;
     if persist {
-        write_back_ids(&source, &loaded)?;
+        write_back_ids(&source, &loaded, &mut report)?;
     }
 
     // Render every card (validates media + cloze) and group notes by deck.
     let mut resolver = MediaResolver::new();
     let mut registry = DeckRegistry::new(persist);
     let mut decks: BTreeMap<String, (i64, Vec<Note>)> = BTreeMap::new();
+    let mut missing: Vec<AnkigenError> = Vec::new();
 
     for l in &loaded {
         let file = &l.parsed.path;
@@ -58,10 +69,15 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
             opts.deck_prefix.as_deref(),
         );
         let name = deck::deck_name(&comps);
-        let deck_id = registry.id_for(dir, &name);
+        let first_seen = !decks.contains_key(&name);
+        let (deck_id, minted) = registry.id_for(dir, &name);
+        if first_seen {
+            report.deck(&name, deck_id, minted);
+        }
 
         for card in &l.parsed.cards {
-            let (key, mut fields) = render_card(card, file, &l.parsed.text, &mut resolver)?;
+            let (key, mut fields) =
+                render_card(card, file, &l.parsed.text, &mut resolver, &mut missing)?;
             let mut tags = l.parsed.file_tags.clone();
             tags.extend(card.spec.tags.iter().cloned());
             let id = card.spec.id.as_deref().expect("id minted above");
@@ -76,18 +92,39 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
         }
     }
 
+    // Surface every missing-media reference at once rather than the first.
+    if !missing.is_empty() {
+        return Err(AnkigenError::MissingMediaBatch {
+            count: missing.len(),
+            errors: missing,
+        });
+    }
+
+    if report.enabled() {
+        for (src, basename) in resolver.media_entries() {
+            report.media(basename, src);
+        }
+        scan_orphans(&loaded, &resolver, &mut report);
+    }
+
     if !opts.check {
         emit_package(decks, &resolver, &opts.output)?;
     }
     registry.flush()?;
+    report.finish(opts.check);
     Ok(())
 }
 
-fn load_all(source: &CardsSource, paths: &[PathBuf]) -> Result<Vec<Loaded>> {
+fn load_all(
+    source: &CardsSource,
+    paths: &[PathBuf],
+    report: &mut Reporter,
+) -> Result<Vec<Loaded>> {
     let mut loaded = Vec::new();
     for (file, root) in discover(paths)? {
         let input = std::fs::read_to_string(&file)
             .map_err(|e| AnkigenError::Io(format!("{}: {e}", file.display())))?;
+        report.source_file(&file);
         let parsed = source.parse(&input, &file)?;
         loaded.push(Loaded {
             parsed,
@@ -98,15 +135,19 @@ fn load_all(source: &CardsSource, paths: &[PathBuf]) -> Result<Vec<Loaded>> {
     Ok(loaded)
 }
 
-fn mint_and_check_ids(loaded: &mut [Loaded]) -> Result<()> {
+fn mint_and_check_ids(loaded: &mut [Loaded], report: &mut Reporter) -> Result<()> {
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
     for l in loaded.iter_mut() {
         let path = l.parsed.path.clone();
         for card in &mut l.parsed.cards {
+            // `id_present` is the durable "new" marker: it stays false for cards
+            // we mint here (it reflects the *source*, not the in-memory spec).
+            let is_new = !card.id_present;
             if card.spec.id.is_none() {
                 card.spec.id = Some(mint_card_id().to_string());
             }
             let id = card.spec.id.clone().unwrap();
+            report.card(&id, is_new, &path);
             if seen.insert(id.clone(), path.clone()).is_some() {
                 return Err(AnkigenError::DuplicateId { id });
             }
@@ -149,11 +190,12 @@ fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
     Ok(())
 }
 
-fn write_back_ids(source: &CardsSource, loaded: &[Loaded]) -> Result<()> {
+fn write_back_ids(source: &CardsSource, loaded: &[Loaded], report: &mut Reporter) -> Result<()> {
     for l in loaded {
         if let Some(new_text) = source.persist_ids(&l.input, &l.parsed) {
             atomic_write(&l.parsed.path, &new_text)
                 .map_err(|e| AnkigenError::Io(format!("{}: {e}", l.parsed.path.display())))?;
+            report.write_back(&l.parsed.path);
         }
     }
     Ok(())
@@ -202,6 +244,7 @@ fn render_card(
     file: &Path,
     text: &str,
     resolver: &mut MediaResolver,
+    missing: &mut Vec<AnkigenError>,
 ) -> Result<(ModelKey, Vec<String>)> {
     let key = card.resolved_model.expect("model resolved above");
     let src_dir = file.parent().unwrap_or_else(|| Path::new("."));
@@ -211,6 +254,7 @@ fn render_card(
         src_dir,
         span: card.block_span,
         resolver,
+        missing,
     };
     let fields = match &card.spec.kind {
         CardKindSpec::Basic { question, answer } => {
@@ -278,4 +322,42 @@ fn has_card_ext(f: &Path) -> bool {
         f.extension().and_then(|e| e.to_str()),
         Some("md") | Some("cards")
     )
+}
+
+fn is_media_ext(f: &Path) -> bool {
+    f.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Walk the distinct source roots for media-extension files and report any that
+/// no card referenced (orphaned). Best-effort: unreadable entries are skipped.
+fn scan_orphans(loaded: &[Loaded], resolver: &MediaResolver, report: &mut Reporter) {
+    use std::collections::HashSet;
+
+    let referenced: HashSet<&Path> = resolver.referenced().collect();
+    let mut roots: Vec<&Path> = loaded.iter().map(|l| l.root.as_path()).collect();
+    roots.sort();
+    roots.dedup();
+
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    for root in roots {
+        for entry in WalkDir::new(root).sort_by_file_name() {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if !entry.file_type().is_file() || !is_media_ext(path) {
+                continue;
+            }
+            let Ok(abs) = std::fs::canonicalize(path) else {
+                continue;
+            };
+            if referenced.contains(abs.as_path()) {
+                continue;
+            }
+            if seen.insert(abs.clone()) {
+                report.orphan(&abs);
+            }
+        }
+    }
 }

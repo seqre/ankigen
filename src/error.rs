@@ -37,6 +37,18 @@ pub enum AnkigenError {
         span: SourceSpan,
     },
 
+    /// One or more referenced media files could not be found. Collected across
+    /// the whole render pass so the user sees every miss at once, not just the
+    /// first. Each inner error is a [`AnkigenError::MissingMedia`] with its own
+    /// spanned label.
+    #[error("{count} referenced media file(s) could not be found")]
+    #[diagnostic(code(ankigen::missing_media))]
+    MissingMediaBatch {
+        count: usize,
+        #[related]
+        errors: Vec<AnkigenError>,
+    },
+
     #[error("duplicate @id `{id}` (used by more than one card)")]
     #[diagnostic(
         code(ankigen::duplicate_id),

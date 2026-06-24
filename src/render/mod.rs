@@ -24,6 +24,9 @@ pub struct RenderCtx<'a> {
     pub src_dir: &'a Path,
     pub span: SourceSpan,
     pub resolver: &'a mut MediaResolver,
+    /// Missing-media references are collected here instead of aborting on the
+    /// first one, so the build can report every miss at once.
+    pub missing: &'a mut Vec<AnkigenError>,
 }
 
 /// Render a normal field (question, answer, example, back-extra).
@@ -222,9 +225,16 @@ fn resolve_src(ctx: &mut RenderCtx, path: &str) -> Result<String> {
     if path.starts_with("http://") || path.starts_with("https://") {
         return Ok(path.to_string());
     }
-    ctx.resolver
-        .resolve(ctx.src_dir, path)
-        .map_err(|_| AnkigenError::missing_media(ctx.file, ctx.text, ctx.span, path))
+    match ctx.resolver.resolve(ctx.src_dir, path) {
+        Ok(basename) => Ok(basename),
+        Err(_) => {
+            // Collect the miss and continue with a placeholder; the build fails
+            // after rendering, so this field is never packaged.
+            ctx.missing
+                .push(AnkigenError::missing_media(ctx.file, ctx.text, ctx.span, path));
+            Ok(path.to_string())
+        }
+    }
 }
 
 fn escape_html(s: &str) -> String {
@@ -243,6 +253,7 @@ mod tests {
 
     fn render(field: &str) -> String {
         let mut resolver = MediaResolver::new();
+        let mut missing = Vec::new();
         let src_dir = Path::new(".");
         let mut ctx = RenderCtx {
             file: Path::new("test.md"),
@@ -254,12 +265,14 @@ mod tests {
                 line_start: 1,
             },
             resolver: &mut resolver,
+            missing: &mut missing,
         };
         render_rich(field, &mut ctx).unwrap()
     }
 
     fn render_cloze_field(field: &str) -> String {
         let mut resolver = MediaResolver::new();
+        let mut missing = Vec::new();
         let src_dir = Path::new(".");
         let mut ctx = RenderCtx {
             file: Path::new("test.md"),
@@ -271,6 +284,7 @@ mod tests {
                 line_start: 1,
             },
             resolver: &mut resolver,
+            missing: &mut missing,
         };
         render_cloze(field, &mut ctx).unwrap()
     }

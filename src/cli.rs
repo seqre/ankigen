@@ -42,4 +42,8 @@ pub struct BuildArgs {
     /// Build + emit but do not persist ids back into sources.
     #[arg(long = "no-write-back")]
     pub no_write_back: bool,
+
+    /// Increase output detail (to stderr): -v a summary, -vv per-item lines.
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
 }

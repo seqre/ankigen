@@ -53,6 +53,7 @@ fn build_opts(output: &Path) -> BuildOptions {
         deck_prefix: None,
         check: false,
         write_back: true,
+        verbose: 0,
     }
 }
 
@@ -171,6 +172,7 @@ fn check_mode_writes_nothing() {
         deck_prefix: None,
         check: true,
         write_back: true,
+        verbose: 0,
     };
     build(std::slice::from_ref(&cards), &opts).unwrap();
 
@@ -218,4 +220,26 @@ fn missing_media_is_an_error() {
     let out = tmp.path().join("deck.apkg");
     let err = build(std::slice::from_ref(&cards), &build_opts(&out));
     assert!(err.is_err(), "missing media should fail the build");
+}
+
+#[test]
+fn all_missing_media_reported_together() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    // Two cards, three missing references total — all should be collected.
+    std::fs::write(
+        cards.join("a.cards"),
+        "q: One\na: [image:gone1.png] and [image:gone2.png]\n\nq: Two\na: [sound:gone3.mp3]\n",
+    )
+    .unwrap();
+    let out = tmp.path().join("deck.apkg");
+    let err = build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap_err();
+    match err {
+        ankigen::AnkigenError::MissingMediaBatch { count, errors } => {
+            assert_eq!(count, 3, "every missing reference is collected, not just the first");
+            assert_eq!(errors.len(), 3);
+        }
+        other => panic!("expected MissingMediaBatch, got {other:?}"),
+    }
 }

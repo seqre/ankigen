@@ -46,4 +46,10 @@ impl MediaResolver {
             .iter()
             .map(|p| (p.as_path(), self.by_abs[p].as_str()))
     }
+
+    /// Every canonicalized absolute path that was referenced by some card. Used
+    /// to detect orphaned media (on-disk files no card points at).
+    pub fn referenced(&self) -> impl Iterator<Item = &Path> {
+        self.by_abs.keys().map(|p| p.as_path())
+    }
 }

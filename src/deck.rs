@@ -72,20 +72,21 @@ impl DeckRegistry {
         }
     }
 
-    /// The id for `deck_path`, looked up in `dir`'s `deck-id.txt`. Mints + records
-    /// a fresh id if absent.
-    pub fn id_for(&mut self, dir: &Path, deck_path: &str) -> i64 {
+    /// The id for `deck_path`, looked up in `dir`'s `deck-id.txt`, plus whether
+    /// it was freshly minted (`true`) or already known (`false`). Mints +
+    /// records a fresh id if absent.
+    pub fn id_for(&mut self, dir: &Path, deck_path: &str) -> (i64, bool) {
         let reg = self
             .dirs
             .entry(dir.to_path_buf())
             .or_insert_with(|| load_dir(dir));
         if let Some((_, id)) = reg.entries.iter().find(|(p, _)| p == deck_path) {
-            return *id;
+            return (*id, false);
         }
         let id = mint_deck_id();
         reg.entries.push((deck_path.to_string(), id));
         reg.dirty = true;
-        id
+        (id, true)
     }
 
     /// Write back any directories whose registry gained new decks.
@@ -158,6 +159,21 @@ mod tests {
             None,
         );
         assert_eq!(deck_name(&comps), "CS::Networking");
+    }
+
+    #[test]
+    fn id_for_reports_new_then_existing() {
+        let tmp = std::env::temp_dir().join(format!("ankigen-deck-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut reg = DeckRegistry::new(false);
+        let (id1, new1) = reg.id_for(&tmp, "CS");
+        assert!(new1, "first lookup mints a fresh id");
+        let (id2, new2) = reg.id_for(&tmp, "CS");
+        assert!(!new2, "second lookup reuses the existing id");
+        assert_eq!(id1, id2);
+        let (_, new3) = reg.id_for(&tmp, "CS::Net");
+        assert!(new3, "a different deck path is new again");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

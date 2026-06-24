@@ -72,16 +72,29 @@ a: [image:A star network:img/star.png]
 ### Field formatting
 
 A small, predictable subset (not full Markdown): `**bold**`, `*italic*`,
-`` `code` ``, `[text](url)` links, fenced ```` ``` ```` code blocks, `- `/`* `
-and `1.` lists, a single newline → line break, and `\` to escape a special
-character. Anything else can be written as raw HTML and is passed through.
-*(Note: `*italic*` cannot itself contain `**bold**`.)*
+`` `code` ``, `$…$`/`$$…$$` math, `[text](url)` links, fenced ```` ``` ````
+code blocks, `- `/`* ` and `1.` lists, a single newline → line break, and `\`
+to escape a special character. Anything else can be written as raw HTML and is
+passed through. *(Note: `*italic*` cannot itself contain `**bold**`.)*
 
 ### Cloze
 
 `==word==` becomes `{{c1::word}}`, auto-numbered left to right. `==word::hint==`
 adds a hint. You can also write native `{{c1::word}}` directly — but don't mix
 the two styles in one card. `==` inside `` `code` `` is left literal.
+
+### Math
+
+Write math with `$…$` (inline) or `$$…$$` (display). The body is
+[LaTeX](https://en.wikipedia.org/wiki/LaTeX) — the input language Anki's
+built-in MathJax understands — and renders on Anki Desktop, AnkiDroid, and
+AnkiMobile with no extra setup:
+
+- `Energy is $E = mc^2$.` — inline
+- `$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$` — a centered display equation
+
+`\$` is a literal dollar sign. The body passes through untouched (so `<`, `>`,
+`&` work inside it); a display equation must not contain a blank line.
 
 ### Media
 
@@ -133,7 +146,14 @@ ankigen build <paths...> [options]
       --deck <PREFIX>   deck prefix prepended above the tree
       --check           parse + validate only; write nothing
       --no-write-back   build + emit, but don't persist ids into sources
+  -v, --verbose         report to stderr: -v a summary (decks, cards, new
+                        cards, media, orphaned media), -vv per-item lines
 ```
+
+A `-v` summary and `-vv` per-item lines go to **stderr**, so stdout stays
+clean. Missing media (a card references a file that isn't there) is collected
+across the whole build and reported all at once before failing; orphaned media
+(files on disk no card references) is reported under `-v`/`-vv`.
 
 Exit codes: `0` ok, non-zero on a parse/validation/IO error (with a
 line-pointed diagnostic).
