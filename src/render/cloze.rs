@@ -25,6 +25,13 @@ pub fn expand(field: &str) -> Result<String, MixedCloze> {
             rest = &rest[1..];
             continue;
         }
+        // Copy `$…$` / `$$…$$` math verbatim so a body containing `==` (e.g.
+        // `$a == b$`) is not mistaken for a cloze. Mirrors the `in_code` guard.
+        if !in_code && ch == '$' {
+            let consumed = copy_math(rest, &mut out);
+            rest = &rest[consumed..];
+            continue;
+        }
         if !in_code
             && let Some(after_open) = rest.strip_prefix("==")
             && let Some(close) = after_open.find("==")
@@ -48,6 +55,25 @@ pub fn expand(field: &str) -> Result<String, MixedCloze> {
         return Err(MixedCloze);
     }
     Ok(out)
+}
+
+/// Copy a `$…$` / `$$…$$` math span from the start of `rest` (which begins with
+/// `$`) into `out`, returning the bytes consumed. If there is no matching
+/// closer, only the opening `$` is copied so the scan can continue past it.
+fn copy_math(rest: &str, out: &mut String) -> usize {
+    let (delim, len) = if rest.starts_with("$$") {
+        ("$$", 2)
+    } else {
+        ("$", 1)
+    };
+    if let Some(close) = rest[len..].find(delim) {
+        let end = len + close + len;
+        out.push_str(&rest[..end]);
+        end
+    } else {
+        out.push('$');
+        1
+    }
 }
 
 /// Does the text already contain a native `{{cN::…}}` deletion?
@@ -120,5 +146,18 @@ mod tests {
     #[test]
     fn mixed_is_error() {
         assert!(expand("{{c1::Paris}} and ==Rome==").is_err());
+    }
+
+    #[test]
+    fn skips_math_spans() {
+        // `==` inside math is not a cloze.
+        assert_eq!(expand("$a == b$ ==y==").unwrap(), "$a == b$ {{c1::y}}");
+        assert_eq!(expand("$$a == b$$ ==y==").unwrap(), "$$a == b$$ {{c1::y}}");
+    }
+
+    #[test]
+    fn cloze_around_math() {
+        // A deletion wrapping math keeps the math for the inline stage.
+        assert_eq!(expand("==$x^2$==").unwrap(), "{{c1::$x^2$}}");
     }
 }

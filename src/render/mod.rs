@@ -179,6 +179,16 @@ fn render_inlines(nodes: &[Inline], ctx: &mut RenderCtx) -> Result<String> {
                 s.push_str(&escape_html(t));
                 s.push_str("</code>");
             }
+            // Anki's MathJax delimiters: `\(…\)` inline, `\[…\]` display. The
+            // LaTeX body passes through verbatim except `&`/`<`/`>`, which must
+            // be entity-escaped for valid field HTML; the browser decodes them
+            // before MathJax reads the text node, so the math is unchanged.
+            Inline::Math { source, display } => {
+                let (open, close) = if *display { ("\\[", "\\]") } else { ("\\(", "\\)") };
+                s.push_str(open);
+                s.push_str(&escape_html(source));
+                s.push_str(close);
+            }
             Inline::Link { text, url } => {
                 s.push_str(&format!(
                     "<a href=\"{}\">{}</a>",
@@ -225,4 +235,66 @@ fn escape_html(s: &str) -> String {
 
 fn escape_attr(s: &str) -> String {
     escape_html(s).replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(field: &str) -> String {
+        let mut resolver = MediaResolver::new();
+        let src_dir = Path::new(".");
+        let mut ctx = RenderCtx {
+            file: Path::new("test.md"),
+            text: field,
+            src_dir,
+            span: SourceSpan {
+                byte_start: 0,
+                byte_len: field.len(),
+                line_start: 1,
+            },
+            resolver: &mut resolver,
+        };
+        render_rich(field, &mut ctx).unwrap()
+    }
+
+    fn render_cloze_field(field: &str) -> String {
+        let mut resolver = MediaResolver::new();
+        let src_dir = Path::new(".");
+        let mut ctx = RenderCtx {
+            file: Path::new("test.md"),
+            text: field,
+            src_dir,
+            span: SourceSpan {
+                byte_start: 0,
+                byte_len: field.len(),
+                line_start: 1,
+            },
+            resolver: &mut resolver,
+        };
+        render_cloze(field, &mut ctx).unwrap()
+    }
+
+    #[test]
+    fn inline_math_uses_paren_delimiters() {
+        assert_eq!(render("$x^2$"), "\\(x^2\\)");
+        assert_eq!(render("when $a+b$ holds"), "when \\(a+b\\) holds");
+    }
+
+    #[test]
+    fn display_math_uses_bracket_delimiters() {
+        assert_eq!(render("$$\\sum_{i=1}^n i$$"), "\\[\\sum_{i=1}^n i\\]");
+    }
+
+    #[test]
+    fn math_body_entity_escapes_html_metachars() {
+        // `<`, `>`, `&` become entities (valid HTML; the browser decodes them
+        // back before MathJax reads the text node). Backslashes pass through.
+        assert_eq!(render("$x < y \\& z$"), "\\(x &lt; y \\&amp; z\\)");
+    }
+
+    #[test]
+    fn math_inside_cloze_survives() {
+        assert_eq!(render_cloze_field("==$x^2$=="), "{{c1::\\(x^2\\)}}");
+    }
 }

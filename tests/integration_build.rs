@@ -187,6 +187,29 @@ fn check_mode_writes_nothing() {
 }
 
 #[test]
+fn math_renders_to_mathjax_delimiters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    std::fs::write(
+        cards.join("math.cards"),
+        "q: Bound for $x < y$?\na: It is $a+b$ at most:\n$$\\frac{a}{b}$$\n",
+    )
+    .unwrap();
+    let out = tmp.path().join("deck.apkg");
+
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+
+    let notes = read_notes(&out);
+    assert_eq!(notes.len(), 1);
+    let flds = &notes[0].flds;
+    // Inline `$…$` → `\(…\)`, display `$$…$$` → `\[…\]`; `<` entity-escaped.
+    assert!(flds.contains("\\(x &lt; y\\)"), "inline math: {flds}");
+    assert!(flds.contains("\\(a+b\\)"), "inline math in answer: {flds}");
+    assert!(flds.contains("\\[\\frac{a}{b}\\]"), "display math: {flds}");
+}
+
+#[test]
 fn missing_media_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let cards = tmp.path().join("cards");

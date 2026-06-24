@@ -15,6 +15,12 @@ pub enum Inline {
     Bold(Vec<Inline>),
     Italic(Vec<Inline>),
     Code(String),
+    /// Math expression. `source` is LaTeX (MathJax input), passed through
+    /// verbatim; `display` selects block (`$$…$$`) vs inline (`$…$`) rendering.
+    Math {
+        source: String,
+        display: bool,
+    },
     Link {
         text: String,
         url: String,
@@ -33,7 +39,7 @@ pub enum Inline {
 /// any of these; if no element actually matches, the single char is consumed as
 /// literal text by the fallback branch.
 fn is_special(c: char) -> bool {
-    matches!(c, '\\' | '\n' | '[' | '*' | '`')
+    matches!(c, '\\' | '\n' | '[' | '*' | '`' | '$')
 }
 
 /// Parse a field fragment into inline nodes. The grammar always makes progress,
@@ -56,8 +62,15 @@ fn element(input: &mut &str) -> ModalResult<Inline> {
         bold,
         code,
         italic,
-        // `alt` tuples cap at 9, so the text fallbacks share a branch.
-        alt((text_run, any.map(|c: char| Inline::Text(c.to_string())))),
+        // `alt` tuples cap at 9, so the remaining branches share nested `alt`s.
+        // Display math (`$$`) is tried before inline (`$`); the single-char
+        // `any` fallback turns an unmatched special (e.g. a lone `$`) into text.
+        alt((
+            display_math,
+            inline_math,
+            text_run,
+            any.map(|c: char| Inline::Text(c.to_string())),
+        )),
     ))
     .parse_next(input)
 }
@@ -89,6 +102,24 @@ fn italic(input: &mut &str) -> ModalResult<Inline> {
 fn code(input: &mut &str) -> ModalResult<Inline> {
     delimited("`", take_until(0.., "`"), "`")
         .map(|inner: &str| Inline::Code(inner.to_string()))
+        .parse_next(input)
+}
+
+fn display_math(input: &mut &str) -> ModalResult<Inline> {
+    delimited("$$", take_until(0.., "$$"), "$$")
+        .map(|inner: &str| Inline::Math {
+            source: inner.to_string(),
+            display: true,
+        })
+        .parse_next(input)
+}
+
+fn inline_math(input: &mut &str) -> ModalResult<Inline> {
+    delimited("$", take_until(0.., "$"), "$")
+        .map(|inner: &str| Inline::Math {
+            source: inner.to_string(),
+            display: false,
+        })
         .parse_next(input)
 }
 
@@ -230,5 +261,52 @@ mod tests {
             parse_inlines(r"\*not bold\*"),
             vec![Inline::Text("*not bold*".into())]
         );
+    }
+
+    #[test]
+    fn inline_and_display_math() {
+        assert_eq!(
+            parse_inlines("$x^2$"),
+            vec![Inline::Math {
+                source: "x^2".into(),
+                display: false
+            }]
+        );
+        assert_eq!(
+            parse_inlines("$$\\sum_i i$$"),
+            vec![Inline::Math {
+                source: "\\sum_i i".into(),
+                display: true
+            }]
+        );
+    }
+
+    #[test]
+    fn math_amid_text_and_bold() {
+        assert_eq!(
+            parse_inlines("see $a+b$ and **x**"),
+            vec![
+                Inline::Text("see ".into()),
+                Inline::Math {
+                    source: "a+b".into(),
+                    display: false
+                },
+                Inline::Text(" and ".into()),
+                Inline::Bold(vec![Inline::Text("x".into())]),
+            ]
+        );
+    }
+
+    #[test]
+    fn escaped_dollar_is_literal() {
+        assert_eq!(
+            parse_inlines(r"costs \$5"),
+            vec![Inline::Text("costs $5".into())]
+        );
+    }
+
+    #[test]
+    fn unclosed_dollar_is_literal() {
+        assert_eq!(parse_inlines("$x"), vec![Inline::Text("$x".into())]);
     }
 }
