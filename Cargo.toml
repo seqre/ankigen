@@ -1,0 +1,33 @@
+[package]
+name = "ankigen"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ankigen"
+path = "src/main.rs"
+
+[dependencies]
+blake3 = "1.8.5"
+clap = { version = "4.6.1", features = ["derive"] }
+genanki-rs = { git = "https://github.com/bwkimmel/genanki-rs", rev = "6eda91977730f5050163fceac8355a0e81d86cd5" }
+miette = { version = "7.6.0", features = ["fancy"] }
+rand = "0.10.1"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+tempfile = "3.27.0"
+ulid = "1.2.1"
+walkdir = "2.5.0"
+winnow = "1.0.3"
+
+[dev-dependencies]
+assert_fs = "1.1.4"
+insta = "1.48.0"
+rusqlite = { version = "0.38", features = ["bundled"] }
+zip = "7.4"
+
+# genanki-rs (bwkimmel fork) pins zip ^7.4.0, but 7.4.0 was yanked from
+# crates.io. Patch zip to its upstream git tag (git sources ignore the yank
+# flag) so the graph resolves. Remove once a non-yanked 7.4.x is published.
+[patch.crates-io]
+zip = { git = "https://github.com/zip-rs/zip2", tag = "v7.4.0" }
