@@ -1,7 +1,7 @@
 //! Parser for the native `cards` text format.
 //!
 //! Splits a file into blank-line-separated blocks, reads an optional leading
-//! `<!-- @id … -->`, collects `q:`/`a:`/`e:`/`t:` markers (with multi-line
+//! `// @id …` (or legacy `<!-- @id … -->`), collects `q:`/`a:`/`e:`/`t:` markers (with multi-line
 //! continuation) and `topic:`/`tags:` directives, then infers the card type.
 //! Byte offsets are tracked throughout so diagnostics point at the offending
 //! block. (Inline field syntax is parsed separately by the winnow grammar in
@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::error::{AnkigenError, Result};
 use crate::model::card::SourceSpan;
-use crate::model::{CardKindSpec, CardSpec, ModelKey, ParsedCard, ParsedFile};
+use crate::model::{CardKindSpec, CardSpec, IdSyntax, ModelKey, ParsedCard, ParsedFile};
 use crate::render::cloze;
 
 pub fn parse(input: &str, path: &Path) -> Result<ParsedFile> {
@@ -140,53 +140,41 @@ fn marker(line: &str) -> Option<(Marker, &str)> {
     None
 }
 
-/// Parse a leading `<!-- @id <ulid> [model=<key>] -->` comment, returning the
-/// id and the optional raw `model=` token.
-fn parse_id_comment(line: &str) -> Option<(&str, Option<&str>)> {
-    let inner = line
-        .trim()
-        .strip_prefix("<!--")?
-        .strip_suffix("-->")?
-        .trim();
-    let rest = inner.strip_prefix("@id")?.trim();
+/// A `//` line comment (at column 0, like markers). It is dropped wherever it
+/// appears in a block, except inside a fenced code block.
+fn is_comment(line: &str) -> bool {
+    line.starts_with("//")
+}
+
+/// Parse a `// @id <ulid> [model=<key>]` comment (or the legacy
+/// `<!-- @id <ulid> [model=<key>] -->`), returning the id, the optional raw
+/// `model=` token, and which syntax was used.
+fn parse_id_comment(line: &str) -> Option<(&str, Option<&str>, IdSyntax)> {
+    let line = line.trim();
+    let (inner, syntax) = match line.strip_prefix("//") {
+        Some(rest) => (rest, IdSyntax::Slash),
+        None => (
+            line.strip_prefix("<!--")?.strip_suffix("-->")?,
+            IdSyntax::Html,
+        ),
+    };
+    let rest = inner.trim().strip_prefix("@id")?.trim();
     let mut parts = rest.split_whitespace();
     let id = parts.next().filter(|s| !s.is_empty())?;
     let model = parts.find_map(|tok| tok.strip_prefix("model="));
-    Some((id, model))
+    Some((id, model, syntax))
 }
 
 fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
     let span = block.span();
     let err = |msg: &str, help: Option<&str>| AnkigenError::parse(path, full, span, msg, help);
 
-    let mut lines = block.text.lines().peekable();
-
-    // Optional leading id comment, possibly carrying a `model=<key>` suffix.
+    // Optional id comment (before any field), possibly carrying a
+    // `model=<key>` suffix.
     let mut id: Option<String> = None;
     let mut model_marker: Option<ModelKey> = None;
     let mut id_span: Option<SourceSpan> = None;
-    if let Some(first) = lines.peek()
-        && let Some((found, model_tok)) = parse_id_comment(first)
-    {
-        id = Some(found.to_string());
-        if let Some(tok) = model_tok {
-            match ModelKey::parse(tok) {
-                Some(m) => model_marker = Some(m),
-                None => {
-                    return Err(err(
-                        &format!("unknown `model={tok}` in the `@id` comment"),
-                        Some("expected `model=basic` or `model=basic-example`"),
-                    ));
-                }
-            }
-        }
-        id_span = Some(SourceSpan {
-            byte_start: span.byte_start,
-            byte_len: first.len(),
-            line_start: span.line_start,
-        });
-        lines.next();
-    }
+    let mut id_syntax: Option<IdSyntax> = None;
 
     let (mut q, mut a, mut e, mut t) = (None, None, None, None);
     let mut topic: Option<String> = None;
@@ -201,7 +189,69 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
         Ok(())
     };
 
-    for line in lines {
+    // Inside a fenced code block, `//` lines are field content, not comments.
+    let mut in_fence = false;
+    let mut line_offset = span.byte_start;
+    for (line_start, raw) in (span.line_start..).zip(block.text.split_inclusive('\n')) {
+        let byte_start = line_offset;
+        line_offset += raw.len();
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+
+        if !in_fence {
+            if let Some((found, model_tok, syntax)) = parse_id_comment(line) {
+                let line_span = SourceSpan {
+                    byte_start,
+                    byte_len: line.len(),
+                    line_start,
+                };
+                let line_err = |msg: &str, help: Option<&str>| {
+                    AnkigenError::parse(path, full, line_span, msg, help)
+                };
+                if cur.is_some() {
+                    return Err(line_err(
+                        "the `@id` comment must come before the card's fields",
+                        Some("move this line above `q:`"),
+                    ));
+                }
+                if id.is_some() {
+                    return Err(line_err("duplicate `@id` comment in one card", None));
+                }
+                id = Some(found.to_string());
+                id_syntax = Some(syntax);
+                id_span = Some(line_span);
+                if let Some(tok) = model_tok {
+                    match ModelKey::parse(tok) {
+                        Some(m) => model_marker = Some(m),
+                        None => {
+                            return Err(line_err(
+                                &format!("unknown `model={tok}` in the `@id` comment"),
+                                Some("expected `model=basic` or `model=basic-example`"),
+                            ));
+                        }
+                    }
+                }
+                continue;
+            }
+            if is_comment(line) {
+                continue;
+            }
+        }
+        // A fence may open on the marker line itself (`a: ```rust`), so track
+        // it against the field value; a new marker always starts outside one.
+        let content = match marker(line) {
+            Some((_, v)) => {
+                in_fence = false;
+                v
+            }
+            None => line,
+        };
+        in_fence = if in_fence {
+            content.trim() != "```"
+        } else {
+            content.trim_start().starts_with("```")
+        };
+
         match marker(line) {
             Some((Marker::Q, v)) => {
                 set(&mut q, v, "q:")?;
@@ -253,7 +303,7 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
                 tags: card_tags,
             });
         }
-        return Ok(Outcome::Empty); // e.g. a stray `<!-- @id -->`
+        return Ok(Outcome::Empty); // e.g. a stray `// @id`
     };
 
     if topic.is_some() {
@@ -313,6 +363,7 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
         block_span: span,
         id_present,
         id_span,
+        id_syntax,
         model_marker,
         resolved_model: None,
     }))
@@ -380,12 +431,73 @@ mod tests {
     }
 
     #[test]
+    fn parses_slash_and_html_id_comments() {
+        let f = parse_str("// @id 01ABC model=basic\nq: Q\na: A\n");
+        assert_eq!(f.cards[0].spec.id.as_deref(), Some("01ABC"));
+        assert_eq!(f.cards[0].model_marker, Some(ModelKey::Basic));
+        assert_eq!(f.cards[0].id_syntax, Some(IdSyntax::Slash));
+
+        let g = parse_str("<!-- @id 01ABC -->\nq: Q\na: A\n");
+        assert_eq!(g.cards[0].spec.id.as_deref(), Some("01ABC"));
+        assert_eq!(g.cards[0].id_syntax, Some(IdSyntax::Html));
+    }
+
+    #[test]
     fn multiline_continuation() {
         let f = parse_str("q: Q\na: line one\nline two\n");
         match &f.cards[0].spec.kind {
             CardKindSpec::Basic { answer, .. } => assert_eq!(answer, "line one\nline two"),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn slash_comments_are_ignored() {
+        let src = "// a note about this file\n\n\
+                   // to improve\n// @id 01ABC model=basic-example\n// another\n\
+                   q: Q\n// mid-field\na: line one\n// skip me\nline two\n";
+        let f = parse_str(src);
+        assert_eq!(f.cards.len(), 1);
+        let c = &f.cards[0];
+        assert_eq!(c.spec.id.as_deref(), Some("01ABC"));
+        assert_eq!(c.model_marker, Some(ModelKey::BasicExample));
+        // The id span points at the id line itself, not the block start.
+        let span = c.id_span.unwrap();
+        assert_eq!(
+            &src[span.byte_start..span.byte_start + span.byte_len],
+            "// @id 01ABC model=basic-example"
+        );
+        assert_eq!(span.line_start, 4);
+        match &c.spec.kind {
+            CardKindSpec::Basic { question, answer } => {
+                assert_eq!(question, "Q");
+                assert_eq!(answer, "line one\nline two");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn slash_lines_in_code_fences_are_kept() {
+        let f = parse_str("q: Q\na: ```c\n// keep\nint x;\n```\n// drop\n");
+        match &f.cards[0].spec.kind {
+            CardKindSpec::Basic { answer, .. } => {
+                assert_eq!(answer, "```c\n// keep\nint x;\n```")
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn id_after_fields_or_twice_errors() {
+        assert!(parse("q: Q\n// @id 01ABC\na: A\n", &PathBuf::from("t")).is_err());
+        assert!(
+            parse(
+                "// @id 01ABC\n// @id 01DEF\nq: Q\na: A\n",
+                &PathBuf::from("t")
+            )
+            .is_err()
+        );
     }
 
     #[test]

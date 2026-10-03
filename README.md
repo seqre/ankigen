@@ -11,7 +11,7 @@ ankigen build cards/ -o deck.apkg
 ## Why
 
 Editing decks by hand in Anki is tedious, and re-importing hand-built `.apkg`s
-usually duplicates cards. `ankigen` writes a small `<!-- @id … -->` marker next
+usually duplicates cards. `ankigen` writes a small `// @id …` marker next
 to each card the first time it builds; the Anki note GUID is derived from that
 id (not from the content), so edits are matched to the existing note and your
 scheduling is preserved.
@@ -60,6 +60,20 @@ t: 200
 
 q: Star topology
 a: [image:A star network:img/star.png]
+```
+
+### Comments
+
+A line starting with `//` (at column 0) is a comment and is ignored anywhere —
+before a card, between its fields, or in a block of its own. Inside a fenced
+```` ``` ```` code block, `//` lines are kept as code. The `// @id …` line is a
+comment too, and may sit among other comments as long as it precedes `q:`.
+
+```
+// TODO: reword
+// @id 01KXER6WW489V21WS294KYJTY1 model=basic-example
+q: How are spacecraft anomalies handled?
+a: Flight controllers act as first responders.
 ```
 
 ### Directives
@@ -122,9 +136,11 @@ cards/CS/networking.md  (topic: Networking) → deck  CS::Networking
 `ankigen` writes two kinds of id back into your source tree. **Commit them to
 version control** so your decks stay stable across machines and rebuilds:
 
-- `<!-- @id ULID -->` — one per card, at the top of its block. A `q:`/`a:`
-  card also carries a `model=<key>` suffix (`<!-- @id ULID model=basic-example -->`)
-  pinning its note type so it can never silently change.
+- `// @id ULID` — one per card, at the top of its block. A `q:`/`a:`
+  card also carries a `model=<key>` suffix (`// @id ULID model=basic-example`)
+  pinning its note type so it can never silently change. The older
+  `<!-- @id … -->` spelling is still read; `--upgrade-source` rewrites it to
+  `// @id …` (same id, so the GUID and review history are unchanged).
 - `deck-id.txt` — one per directory, mapping deck path → a stable deck id.
 
 Deleting an id starts that card/deck fresh (the old one is orphaned in Anki).
@@ -146,6 +162,8 @@ ankigen build <paths...> [options]
       --deck <PREFIX>   deck prefix prepended above the tree
       --check           parse + validate only; write nothing
       --no-write-back   build + emit, but don't persist ids into sources
+      --upgrade-source  also rewrite legacy syntax to its canonical form
+                        (`<!-- @id … -->` → `// @id …`)
   -v, --verbose         report to stderr: -v a summary (decks, cards, new
                         cards, media, orphaned media), -vv per-item lines
 ```

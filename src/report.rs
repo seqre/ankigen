@@ -92,7 +92,10 @@ impl Reporter {
         eprintln!("ankigen build summary:");
         eprintln!("  source files  {}", self.source_files);
         eprintln!("  decks         {} ({} new)", self.decks, self.new_decks);
-        eprintln!("  cards         {} ({} new)", self.total_cards, self.new_cards);
+        eprintln!(
+            "  cards         {} ({} new)",
+            self.total_cards, self.new_cards
+        );
         if check {
             eprintln!("  (check mode: no @id, deck-id.txt, or .apkg written)");
         } else {

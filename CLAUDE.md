@@ -6,7 +6,7 @@ Orientation for working in this repo.
 
 `ankigen` is a Rust CLI + library that compiles plain-text flashcards into an
 Anki `.apkg`. Its defining feature is **stable identity**: each card gets a
-persisted `<!-- @id ULID -->`, and the Anki note GUID is derived from that id
+persisted `// @id ULID` comment, and the Anki note GUID is derived from that id
 (not the content), so edits update existing cards instead of duplicating them.
 
 ## Layout
@@ -32,10 +32,12 @@ tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
   duplicate cards. GUID format is `ankigen::<model>::<ulid>`.
 - **Model ids and field lists are frozen** (`anki/models.rs`). Changing a model
   id, a `ModelKey::as_str()`, or a field list orphans every existing note.
-- **Write-back is insert + one-time `model=` pin, atomic, idempotent.** `@id`
+- **Write-back is insert + one-time `model=` pin, atomic, idempotent.** `// @id`
   goes at the *start* of a block. A `q:`/`a:` card's id line also carries a
   `model=<key>` suffix; legacy bare-`@id` cards get this suffix added by a single
-  in-place line rewrite on first rebuild. Once every card has its id (and
+  in-place line rewrite on first rebuild. Legacy `<!-- @id … -->` lines are
+  still parsed and are only converted to `// @id` under `--upgrade-source`
+  (or when a `model=` pin rewrites the line anyway). Once every card has its id (and
   `model=` where due), a rebuild must leave files byte-identical.
 - **`q:`/`a:` (and `q:`/`a:`/`e:`) both use the Basic+Example model for new
   cards.** The `model=` marker is the durable source of truth for a `q:`/`a:`
@@ -48,7 +50,9 @@ tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
 ## Parsing
 
 Two layers: `source/cards.rs` hand-scans block structure (markers, directives,
-continuation) tracking byte offsets for diagnostics; `render/inline.rs` is the
+continuation, the `@id` line, and `//` comments, which are skipped except inside
+a fenced code block), tracking per-line byte offsets for diagnostics and
+write-back; `render/inline.rs` is the
 winnow grammar for inline syntax. Cloze `==…==` is expanded *before* the inline
 parse. There is intentionally **no Markdown engine** (the field syntax is a
 small, documented subset; raw HTML passes through).
@@ -63,7 +67,7 @@ must match the fork's version (0.38) so libsqlite3-sys stays unified.
 ## Working here
 
 ```sh
-cargo test          # 23 unit + 3 integration
+cargo test
 cargo clippy --all-targets
 cargo run -- build examples/cards -o /tmp/deck.apkg
 ```

@@ -35,6 +35,7 @@ pub fn run(cli: cli::Cli) -> Result<()> {
                 deck_prefix: args.deck,
                 check: args.check,
                 write_back: !args.no_write_back,
+                upgrade_source: args.upgrade_source,
                 verbose: args.verbose,
             };
             pipeline::build(&args.paths, &opts)

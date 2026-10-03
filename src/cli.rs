@@ -43,6 +43,11 @@ pub struct BuildArgs {
     #[arg(long = "no-write-back")]
     pub no_write_back: bool,
 
+    /// Rewrite legacy source syntax to its canonical form during write-back
+    /// (e.g. `<!-- @id … -->` → `// @id …`).
+    #[arg(long = "upgrade-source", conflicts_with_all = ["check", "no_write_back"])]
+    pub upgrade_source: bool,
+
     /// Increase output detail (to stderr): -v a summary, -vv per-item lines.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

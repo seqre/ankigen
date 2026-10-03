@@ -15,8 +15,10 @@ use crate::model::ParsedFile;
 pub trait CardSource {
     fn format_id(&self) -> &'static str;
     fn parse(&self, input: &str, path: &Path) -> Result<ParsedFile>;
-    /// Rewrite `input` to persist minted ids, or `None` if nothing changed.
-    fn persist_ids(&self, input: &str, parsed: &ParsedFile) -> Option<String>;
+    /// Rewrite `input` to persist minted ids (and, with `upgrade_source`,
+    /// convert legacy syntax to its canonical form), or `None` if nothing changed.
+    fn persist_ids(&self, input: &str, parsed: &ParsedFile, upgrade_source: bool)
+    -> Option<String>;
 }
 
 pub struct CardsSource;
@@ -30,7 +32,12 @@ impl CardSource for CardsSource {
         cards::parse(input, path)
     }
 
-    fn persist_ids(&self, input: &str, parsed: &ParsedFile) -> Option<String> {
-        writeback::inject_ids(input, parsed)
+    fn persist_ids(
+        &self,
+        input: &str,
+        parsed: &ParsedFile,
+        upgrade_source: bool,
+    ) -> Option<String> {
+        writeback::inject_ids(input, parsed, upgrade_source)
     }
 }

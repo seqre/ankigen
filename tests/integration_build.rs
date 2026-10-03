@@ -53,6 +53,7 @@ fn build_opts(output: &Path) -> BuildOptions {
         deck_prefix: None,
         check: false,
         write_back: true,
+        upgrade_source: false,
         verbose: 0,
     }
 }
@@ -95,7 +96,7 @@ fn builds_notes_and_keeps_guid_on_edit() {
     // The id line is written back pinned to the resolved note type.
     let text = std::fs::read_to_string(&note_file).unwrap();
     assert!(
-        text.contains("<!-- @id") && text.contains("model=basic-example"),
+        text.contains("// @id") && text.contains("model=basic-example"),
         "id + model marker written back"
     );
     // Edit the card's *content* but keep its `@id`.
@@ -140,14 +141,17 @@ fn legacy_basic_card_stays_basic() {
 
     let notes = read_notes(&out);
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].mid, MODEL_BASIC, "legacy card keeps the Basic model");
+    assert_eq!(
+        notes[0].mid, MODEL_BASIC,
+        "legacy card keeps the Basic model"
+    );
     assert_eq!(notes[0].guid, "ankigen::basic::01ARZ3NDEKTSV4RRFFQ69G5FAV");
 
     // The legacy line is upgraded once to pin the note type.
     let text = std::fs::read_to_string(&note_file).unwrap();
     assert_eq!(
         text,
-        "<!-- @id 01ARZ3NDEKTSV4RRFFQ69G5FAV model=basic -->\nq: Q\na: A\n"
+        "// @id 01ARZ3NDEKTSV4RRFFQ69G5FAV model=basic\nq: Q\na: A\n"
     );
 
     // Rebuild: marker present ⇒ source byte-identical and GUID unchanged.
@@ -155,6 +159,38 @@ fn legacy_basic_card_stays_basic() {
     assert_eq!(std::fs::read_to_string(&note_file).unwrap(), text);
     let notes2 = read_notes(&out);
     assert_eq!(notes2[0].guid, "ankigen::basic::01ARZ3NDEKTSV4RRFFQ69G5FAV");
+}
+
+#[test]
+fn upgrade_source_converts_html_ids_keeping_guids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    let note_file = cards.join("html.cards");
+    let html = "<!-- @id 01ARZ3NDEKTSV4RRFFQ69G5FAV model=basic-example -->\nq: Q\na: A\n";
+    std::fs::write(&note_file, html).unwrap();
+    let out = tmp.path().join("deck.apkg");
+
+    // Without the flag, legacy HTML ids are read but left untouched.
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+    assert_eq!(std::fs::read_to_string(&note_file).unwrap(), html);
+    let guid = read_notes(&out)[0].guid.clone();
+
+    let opts = BuildOptions {
+        upgrade_source: true,
+        ..build_opts(&out)
+    };
+    build(std::slice::from_ref(&cards), &opts).unwrap();
+    let text = std::fs::read_to_string(&note_file).unwrap();
+    assert_eq!(
+        text,
+        "// @id 01ARZ3NDEKTSV4RRFFQ69G5FAV model=basic-example\nq: Q\na: A\n"
+    );
+    assert_eq!(read_notes(&out)[0].guid, guid, "upgrade keeps the GUID");
+
+    // Already canonical ⇒ a further upgrade is a no-op.
+    build(std::slice::from_ref(&cards), &opts).unwrap();
+    assert_eq!(std::fs::read_to_string(&note_file).unwrap(), text);
 }
 
 #[test]
@@ -172,6 +208,7 @@ fn check_mode_writes_nothing() {
         deck_prefix: None,
         check: true,
         write_back: true,
+        upgrade_source: false,
         verbose: 0,
     };
     build(std::slice::from_ref(&cards), &opts).unwrap();
@@ -237,7 +274,10 @@ fn all_missing_media_reported_together() {
     let err = build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap_err();
     match err {
         ankigen::AnkigenError::MissingMediaBatch { count, errors } => {
-            assert_eq!(count, 3, "every missing reference is collected, not just the first");
+            assert_eq!(
+                count, 3,
+                "every missing reference is collected, not just the first"
+            );
             assert_eq!(errors.len(), 3);
         }
         other => panic!("expected MissingMediaBatch, got {other:?}"),

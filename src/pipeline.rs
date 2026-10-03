@@ -31,6 +31,9 @@ pub struct BuildOptions {
     pub check: bool,
     /// Persist minted card ids and `deck-id.txt`.
     pub write_back: bool,
+    /// Also rewrite legacy source syntax (e.g. `<!-- @id -->`) to its canonical
+    /// form during write-back.
+    pub upgrade_source: bool,
     /// Output verbosity: 0 silent, 1 summary, 2+ per-item (to stderr).
     pub verbose: u8,
 }
@@ -50,7 +53,7 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
 
     let persist = opts.write_back && !opts.check;
     if persist {
-        write_back_ids(&source, &loaded, &mut report)?;
+        write_back_ids(&source, &loaded, opts.upgrade_source, &mut report)?;
     }
 
     // Render every card (validates media + cloze) and group notes by deck.
@@ -115,11 +118,7 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
     Ok(())
 }
 
-fn load_all(
-    source: &CardsSource,
-    paths: &[PathBuf],
-    report: &mut Reporter,
-) -> Result<Vec<Loaded>> {
+fn load_all(source: &CardsSource, paths: &[PathBuf], report: &mut Reporter) -> Result<Vec<Loaded>> {
     let mut loaded = Vec::new();
     for (file, root) in discover(paths)? {
         let input = std::fs::read_to_string(&file)
@@ -171,15 +170,15 @@ fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
                     None if card.id_present => ModelKey::Basic,
                     None => ModelKey::BasicExample,
                 },
-                CardKindSpec::BasicExample { .. }
-                    if card.model_marker == Some(ModelKey::Basic) =>
-                {
+                CardKindSpec::BasicExample { .. } if card.model_marker == Some(ModelKey::Basic) => {
                     return Err(AnkigenError::parse(
                         &l.parsed.path,
                         &l.parsed.text,
                         card.block_span,
                         "card has an example but is pinned to the legacy Basic note type",
-                        Some("remove the `e:` example, or drop the `model=basic` marker to migrate it"),
+                        Some(
+                            "remove the `e:` example, or drop the `model=basic` marker to migrate it",
+                        ),
                     ));
                 }
                 other => other.model_key(),
@@ -190,9 +189,14 @@ fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
     Ok(())
 }
 
-fn write_back_ids(source: &CardsSource, loaded: &[Loaded], report: &mut Reporter) -> Result<()> {
+fn write_back_ids(
+    source: &CardsSource,
+    loaded: &[Loaded],
+    upgrade_source: bool,
+    report: &mut Reporter,
+) -> Result<()> {
     for l in loaded {
-        if let Some(new_text) = source.persist_ids(&l.input, &l.parsed) {
+        if let Some(new_text) = source.persist_ids(&l.input, &l.parsed, upgrade_source) {
             atomic_write(&l.parsed.path, &new_text)
                 .map_err(|e| AnkigenError::Io(format!("{}: {e}", l.parsed.path.display())))?;
             report.write_back(&l.parsed.path);
@@ -220,8 +224,7 @@ fn emit_package(
     // genanki uses `path.file_name()` as the media filename inside the apkg,
     // so we copy each file into a tempdir under its hashed basename so that
     // what genanki records matches the `<img src="…">` we emitted.
-    let tmp = tempfile::tempdir()
-        .map_err(|e| AnkigenError::Io(format!("tempdir: {e}")))?;
+    let tmp = tempfile::tempdir().map_err(|e| AnkigenError::Io(format!("tempdir: {e}")))?;
     let mut staged: Vec<PathBuf> = Vec::new();
     for (src, basename) in resolver.media_entries() {
         let dst = tmp.path().join(basename);

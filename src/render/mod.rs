@@ -187,7 +187,11 @@ fn render_inlines(nodes: &[Inline], ctx: &mut RenderCtx) -> Result<String> {
             // be entity-escaped for valid field HTML; the browser decodes them
             // before MathJax reads the text node, so the math is unchanged.
             Inline::Math { source, display } => {
-                let (open, close) = if *display { ("\\[", "\\]") } else { ("\\(", "\\)") };
+                let (open, close) = if *display {
+                    ("\\[", "\\]")
+                } else {
+                    ("\\(", "\\)")
+                };
                 s.push_str(open);
                 s.push_str(&escape_html(source));
                 s.push_str(close);
@@ -230,8 +234,9 @@ fn resolve_src(ctx: &mut RenderCtx, path: &str) -> Result<String> {
         Err(_) => {
             // Collect the miss and continue with a placeholder; the build fails
             // after rendering, so this field is never packaged.
-            ctx.missing
-                .push(AnkigenError::missing_media(ctx.file, ctx.text, ctx.span, path));
+            ctx.missing.push(AnkigenError::missing_media(
+                ctx.file, ctx.text, ctx.span, path,
+            ));
             Ok(path.to_string())
         }
     }
