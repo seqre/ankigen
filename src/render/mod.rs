@@ -218,6 +218,10 @@ fn render_blocks(field: &str, ctx: &mut RenderCtx) -> Result<String> {
     Ok(html)
 }
 
+/// What a media reference whose file is missing renders as (HTML-escaped, so
+/// the card shows it literally): a visible cue to rebuild once the media is back.
+const MISSING_MEDIA: &str = "&lt;missing media&gt;";
+
 fn render_inlines(nodes: &[Inline], ctx: &mut RenderCtx) -> Result<String> {
     let mut s = String::new();
     for n in nodes {
@@ -261,7 +265,10 @@ fn render_inlines(nodes: &[Inline], ctx: &mut RenderCtx) -> Result<String> {
             }
             Inline::Break => s.push_str("<br>"),
             Inline::Image { path, caption } => {
-                let src = resolve_src(ctx, path)?;
+                let Some(src) = resolve_src(ctx, path)? else {
+                    s.push_str(MISSING_MEDIA);
+                    continue;
+                };
                 match caption {
                     Some(cap) => s.push_str(&format!(
                         "<figure><img src=\"{}\" alt=\"{}\"><figcaption>{}</figcaption></figure>",
@@ -273,7 +280,10 @@ fn render_inlines(nodes: &[Inline], ctx: &mut RenderCtx) -> Result<String> {
                 }
             }
             Inline::Sound { path } => {
-                let src = resolve_src(ctx, path)?;
+                let Some(src) = resolve_src(ctx, path)? else {
+                    s.push_str(MISSING_MEDIA);
+                    continue;
+                };
                 s.push_str(&format!("[sound:{src}]"));
             }
         }
@@ -281,19 +291,21 @@ fn render_inlines(nodes: &[Inline], ctx: &mut RenderCtx) -> Result<String> {
     Ok(s)
 }
 
-fn resolve_src(ctx: &mut RenderCtx, path: &str) -> Result<String> {
+/// The packaged name for a media reference, or `None` if the file is missing
+/// (recorded in `ctx.missing`; [`MISSING_MEDIA`] is rendered in its place).
+fn resolve_src(ctx: &mut RenderCtx, path: &str) -> Result<Option<String>> {
     if path.starts_with("http://") || path.starts_with("https://") {
-        return Ok(path.to_string());
+        return Ok(Some(path.to_string()));
     }
     match ctx.resolver.resolve(ctx.src_dir, path) {
-        Ok(basename) => Ok(basename),
+        Ok(basename) => Ok(Some(basename)),
         Err(_) => {
-            // Collect the miss and continue with a placeholder; the build fails
-            // after rendering, so this field is never packaged.
+            // Collect the miss and render a marker in its place: the build fails
+            // after rendering unless `--ignore-missing-media` asked for exactly that.
             ctx.missing.push(AnkigenError::missing_media(
                 ctx.file, ctx.text, ctx.span, path,
             ));
-            Ok(path.to_string())
+            Ok(None)
         }
     }
 }

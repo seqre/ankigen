@@ -50,6 +50,11 @@ pub struct BuildArgs {
     #[arg(long = "upgrade-source", conflicts_with_all = ["check", "no_write_back"])]
     pub upgrade_source: bool,
 
+    /// Build even if media files cannot be found: each such reference becomes
+    /// a visible `<missing media>` marker on the card and a warning.
+    #[arg(long = "ignore-missing-media")]
+    pub ignore_missing_media: bool,
+
     /// Increase output detail (to stderr): -v a summary, -vv per-item lines.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,

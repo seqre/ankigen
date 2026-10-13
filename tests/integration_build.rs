@@ -75,6 +75,7 @@ fn build_opts(output: &Path) -> BuildOptions {
         check: false,
         write_back: true,
         upgrade_source: false,
+        ignore_missing_media: false,
         verbose: 0,
     }
 }
@@ -230,6 +231,7 @@ fn check_mode_writes_nothing() {
         check: true,
         write_back: true,
         upgrade_source: false,
+        ignore_missing_media: false,
         verbose: 0,
     };
     build(std::slice::from_ref(&cards), &opts).unwrap();
@@ -485,5 +487,45 @@ fn built_directory_names_the_root_deck_and_deck_flag_renames_it() {
     assert_eq!(
         std::fs::read_to_string(cards.join("CS/deck-id.txt")).unwrap(),
         ids
+    );
+}
+
+#[test]
+fn ignore_missing_media_builds_the_note_with_a_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    std::fs::write(cards.join("here.png"), b"png").unwrap();
+    std::fs::write(
+        cards.join("a.cards"),
+        "q: Pic\na: before [image:nope.png] after\n[image:A caption:gone.png]\n[sound:nope.mp3]\n[image:here.png]\n",
+    )
+    .unwrap();
+    let out = tmp.path().join("deck.apkg");
+    let mut opts = build_opts(&out);
+    opts.ignore_missing_media = true;
+    build(std::slice::from_ref(&cards), &opts).unwrap();
+
+    let notes = read_notes(&out);
+    assert_eq!(notes.len(), 1);
+    let flds = &notes[0].flds;
+    assert!(flds.contains("before") && flds.contains("after"), "{flds}");
+    assert!(
+        !flds.contains("nope") && !flds.contains("gone") && !flds.contains("A caption"),
+        "the marker replaces the whole reference: {flds}"
+    );
+    assert_eq!(
+        flds.matches("<img").count(),
+        1,
+        "present media kept: {flds}"
+    );
+    assert_eq!(
+        flds.matches("&lt;missing media&gt;").count(),
+        3,
+        "each missing reference leaves a marker: {flds}"
+    );
+    assert!(
+        flds.contains("before &lt;missing media&gt; after"),
+        "{flds}"
     );
 }

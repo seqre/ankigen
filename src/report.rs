@@ -19,6 +19,7 @@ pub struct Reporter {
     written_back: usize,
     media: usize,
     orphaned: usize,
+    missing_media: usize,
 }
 
 impl Reporter {
@@ -84,6 +85,13 @@ impl Reporter {
         }
     }
 
+    /// A media reference replaced by a marker under `--ignore-missing-media`.
+    /// Warned about at every level: the deck needs rebuilding once it is back.
+    pub fn missing_media(&mut self, path: &str, file: &str) {
+        self.missing_media += 1;
+        eprintln!("warning: missing media `{path}` replaced by a marker in {file}");
+    }
+
     /// Print the end-of-build summary (level ≥ 1).
     pub fn finish(&self, check: bool) {
         if self.level < 1 {
@@ -103,6 +111,9 @@ impl Reporter {
         }
         eprintln!("  media         {} file(s)", self.media);
         eprintln!("  orphaned      {}", self.orphaned);
+        if self.missing_media > 0 {
+            eprintln!("  missing media {} reference(s) marked", self.missing_media);
+        }
     }
 }
 

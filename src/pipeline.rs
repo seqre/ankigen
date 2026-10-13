@@ -36,6 +36,9 @@ pub struct BuildOptions {
     /// Also rewrite legacy source syntax (e.g. `<!-- @id -->`) to its canonical
     /// form during write-back.
     pub upgrade_source: bool,
+    /// Build even when a media file cannot be found, rendering a visible
+    /// `<missing media>` marker in its place; each one is warned about on stderr.
+    pub ignore_missing_media: bool,
     /// Output verbosity: 0 silent, 1 summary, 2+ per-item (to stderr).
     pub verbose: u8,
 }
@@ -102,8 +105,15 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
         }
     }
 
-    // Surface every missing-media reference at once rather than the first.
-    if !missing.is_empty() {
+    // Surface every missing-media reference at once rather than the first;
+    // under `--ignore-missing-media` the notes carry a marker in their place.
+    if opts.ignore_missing_media {
+        for e in &missing {
+            if let AnkigenError::MissingMedia { path, src, .. } = e {
+                report.missing_media(path, src.name());
+            }
+        }
+    } else if !missing.is_empty() {
         return Err(AnkigenError::MissingMediaBatch {
             count: missing.len(),
             errors: missing,

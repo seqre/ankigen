@@ -187,6 +187,9 @@ ankigen build <paths...> [options]
       --deck <NAME>     top deck name (default: the built directory's name)
       --check           parse + validate only; write nothing
       --no-write-back   build + emit, but don't persist ids into sources
+      --ignore-missing-media
+                        build even if media files can't be found; each such
+                        reference shows as `<missing media>` on the card
       --upgrade-source  also rewrite legacy syntax to its canonical form
                         (`<!-- @id … -->` → `// @id …`)
   -v, --verbose         report to stderr: -v a summary (decks, cards, new

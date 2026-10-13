@@ -38,6 +38,7 @@ pub fn run(cli: cli::Cli) -> Result<()> {
                 check: args.check,
                 write_back: !args.no_write_back,
                 upgrade_source: args.upgrade_source,
+                ignore_missing_media: args.ignore_missing_media,
                 verbose: args.verbose,
             };
             pipeline::build(&args.paths, &opts)
