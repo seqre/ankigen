@@ -1,4 +1,4 @@
-//! `ankigen lsp`: a language server for `.cards` files, over stdio.
+//! `ankigen lsp`: a language server for card files, over stdio.
 //!
 //! It runs the same parser and checks as `ankigen build`, so an editor shows
 //! exactly what a build would report. The server only reads: minting ids and

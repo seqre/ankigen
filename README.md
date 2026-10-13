@@ -197,7 +197,7 @@ runs the language server described next.
 
 ## Editor support
 
-`ankigen lsp` is a language server (LSP over stdio) for `.cards` files. It
+`ankigen lsp` is a language server (LSP over stdio) for card files. It
 runs the same parser and checks as `ankigen build`, so the editor shows what a
 build would report, as you type:
 
@@ -217,15 +217,21 @@ The server never edits your files: ids are still minted by `ankigen build`.
 ### Neovim (0.11+)
 
 ```lua
-vim.filetype.add({ extension = { cards = 'ankigen' } })
+vim.filetype.add({
+  extension = {
+    cards = 'ankigen',
+    -- Markdown inside a deck tree is a card file, not prose.
+    md = function(path)
+      return vim.fs.root(path, 'deck-id.txt') and 'ankigen' or 'markdown'
+    end,
+  },
+})
 
 vim.lsp.config('ankigen', {
   cmd = { 'ankigen', 'lsp' },
   filetypes = { 'ankigen' },
-  -- Attach only inside a deck tree `ankigen build` has already seen.
   root_dir = function(bufnr, on_dir)
-    local root = vim.fs.root(bufnr, 'deck-id.txt')
-    if root then on_dir(root) end
+    on_dir(vim.fs.root(bufnr, 'deck-id.txt') or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)))
   end,
 })
 vim.lsp.enable('ankigen')
@@ -241,12 +247,17 @@ vim.api.nvim_set_hl(0, '@lsp.type.emphasis.ankigen', { italic = true })
 vim.api.nvim_set_hl(0, '@lsp.type.cloze.ankigen', { link = 'Special' })
 ```
 
-This attaches to `.cards` files only; card files named `.md` build fine but
-stay plain Markdown in the editor. Because of the `root_dir` rule, a `.cards`
-file in a directory that has never been built (no `deck-id.txt` yet) gets no
-server until its first `ankigen build`; to attach everywhere instead, replace
-the function body with `on_dir(vim.fs.root(bufnr, 'deck-id.txt') or
-vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)))`.
+The server attaches to:
+
+- every `.cards` file, anywhere — including a new deck that has never been
+  built;
+- `.md` files inside a deck tree, i.e. with a `deck-id.txt` in their directory
+  or one above it (`ankigen build` writes that file). They get the `ankigen`
+  filetype, so Markdown highlighting and plugins stay out of the way.
+
+Any other `.md` file is left as ordinary Markdown. A new `.md` card file is
+therefore plain Markdown until its directory has been built once; name it
+`.cards` to have the server from the first line.
 
 The other token types are standard (`keyword`, `comment`, `string`, …) and
 take your colour scheme's colours. If your scheme clears highlights when it
