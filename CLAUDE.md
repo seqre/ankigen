@@ -21,8 +21,13 @@ src/
   anki/       the 5 frozen genanki models + note builder
   media/      blake3 content-hash basenames
   deck/ (deck.rs)  directory-derived deck paths + per-directory deck-id.txt
+  check.rs    validation shared by build and the language server (model resolution)
+  lsp/        `ankigen lsp`: mod.rs (protocol loop, cross-file duplicate ids),
+              analysis.rs (diagnostics/hover/completion), tokens.rs (semantic
+              tokens), text.rs (byte offset ⇄ LSP position)
   pipeline.rs orchestration; cli.rs (clap); error.rs (miette diagnostics)
 tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
+tests/lsp.rs                drives the server over an in-memory connection
 ```
 
 ## Invariants — do not break
@@ -59,7 +64,22 @@ continuation, the `@id` line, and `//` comments, which are skipped except inside
 a fenced code block), tracking per-line byte offsets for diagnostics and
 write-back; `render/inline.rs` is the
 winnow grammar for inline syntax. Cloze `==…==` is expanded *before* the inline
-parse. There is intentionally **no Markdown engine** (the field syntax is a
+parse. The block parser **recovers per block**: `parse_lenient` returns the cards
+that parsed plus a `Diag` per problem (each spanning the offending line), and
+a `BlockSyntax` for every block — its comment/`@id` lines and each field's
+source ranges (`FieldSrc::pieces`). `parse` is the strict wrapper `build` uses.
+The inline grammar (`parse_inlines_spanned`), block `layout` and
+`cloze::shorthand_spans` all report byte ranges into the field; map those back
+to the file with `FieldSrc::source_spans`.
+
+## Language server
+
+`lsp/analysis.rs` and `lsp/tokens.rs` are protocol-free (byte ranges in, byte
+ranges out) and must call the library's parser/grammar rather than re-lex:
+the editor has to agree with `build`. The server is read-only — no write-back.
+`TokenKind::ALL` is the semantic-token legend; its order is the wire encoding.
+
+There is intentionally **no Markdown engine** (the field syntax is a
 small, documented subset; raw HTML passes through).
 
 ## Dependencies

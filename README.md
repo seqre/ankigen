@@ -186,7 +186,71 @@ across the whole build and reported all at once before failing; orphaned media
 (files on disk no card references) is reported under `-v`/`-vv`.
 
 Exit codes: `0` ok, non-zero on a parse/validation/IO error (with a
-line-pointed diagnostic).
+line-pointed diagnostic). Every parse error in every file is reported in one
+run, each at the line it concerns.
+
+```
+ankigen lsp
+```
+
+runs the language server described next.
+
+## Editor support
+
+`ankigen lsp` is a language server (LSP over stdio) for `.cards` files. It
+runs the same parser and checks as `ankigen build`, so the editor shows what a
+build would report, as you type:
+
+- **Diagnostics** — parse errors, a card whose markers no longer match its
+  `model=` pin, mixed cloze styles, missing media files, and duplicate `@id`s
+  (checked across the deck tree, unsaved buffers included).
+- **Highlighting** (semantic tokens) — markers, comments, the `@id` line,
+  tags and topics, cloze deletions and hints, bold, italic, code, math, links
+  and media references.
+- **Hover** on a card — its note type, the Anki cards it produces, its tags
+  and id.
+- **Completion** — markers at the start of a line, `model=` values, and media
+  paths inside `[image:` / `[sound:`.
+
+The server never edits your files: ids are still minted by `ankigen build`.
+
+### Neovim (0.11+)
+
+```lua
+vim.filetype.add({ extension = { cards = 'ankigen' } })
+
+vim.lsp.config('ankigen', {
+  cmd = { 'ankigen', 'lsp' },
+  filetypes = { 'ankigen' },
+  -- Attach only inside a deck tree `ankigen build` has already seen.
+  root_dir = function(bufnr, on_dir)
+    local root = vim.fs.root(bufnr, 'deck-id.txt')
+    if root then on_dir(root) end
+  end,
+})
+vim.lsp.enable('ankigen')
+
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = 'ankigen',
+  callback = function() vim.bo.commentstring = '// %s' end,
+})
+
+-- Token types with no standard highlight of their own.
+vim.api.nvim_set_hl(0, '@lsp.type.strong.ankigen', { bold = true })
+vim.api.nvim_set_hl(0, '@lsp.type.emphasis.ankigen', { italic = true })
+vim.api.nvim_set_hl(0, '@lsp.type.cloze.ankigen', { link = 'Special' })
+```
+
+This attaches to `.cards` files only; card files named `.md` build fine but
+stay plain Markdown in the editor. Because of the `root_dir` rule, a `.cards`
+file in a directory that has never been built (no `deck-id.txt` yet) gets no
+server until its first `ankigen build`; to attach everywhere instead, replace
+the function body with `on_dir(vim.fs.root(bufnr, 'deck-id.txt') or
+vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)))`.
+
+The other token types are standard (`keyword`, `comment`, `string`, …) and
+take your colour scheme's colours. If your scheme clears highlights when it
+loads, put the three `nvim_set_hl` lines after it.
 
 ## Status / limitations
 
