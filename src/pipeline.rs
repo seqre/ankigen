@@ -161,9 +161,38 @@ fn mint_and_check_ids(loaded: &mut [Loaded], report: &mut Reporter) -> Result<()
 /// Basic+Example unification (⇒ `Basic`), while a brand-new card unifies on
 /// `BasicExample` (rendered with an empty example). The resolved key is the
 /// single source of truth shared by write-back and rendering.
+///
+/// `q:/r:` cards are always pinned `model=reversed`; a card that switches
+/// between `r:` and a one-way marker after its id was minted is rejected.
 fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
     for l in loaded.iter_mut() {
         for card in &mut l.parsed.cards {
+            // A two-way note can't become a one-way one (or vice versa): Anki
+            // refuses to change a note's type, so the swap would orphan it.
+            let is_reversed = matches!(card.spec.kind, CardKindSpec::Reversed { .. });
+            let pinned_reversed = card.model_marker == Some(ModelKey::Reversed);
+            let mismatch = if is_reversed && !pinned_reversed && card.id_present {
+                Some((
+                    "`r:` on a card whose `@id` belongs to a one-way note",
+                    "remove the `@id` line to create a new two-way card, or change `r:` back",
+                ))
+            } else if !is_reversed && pinned_reversed {
+                Some((
+                    "card is pinned to `model=reversed` but has no `r:`",
+                    "restore `r:`, or remove the `@id` line to create a new card",
+                ))
+            } else {
+                None
+            };
+            if let Some((msg, help)) = mismatch {
+                return Err(AnkigenError::parse(
+                    &l.parsed.path,
+                    &l.parsed.text,
+                    card.block_span,
+                    msg,
+                    Some(help),
+                ));
+            }
             let model = match &card.spec.kind {
                 CardKindSpec::Basic { .. } => match card.model_marker {
                     Some(m) => m,
@@ -280,6 +309,18 @@ fn render_card(
             render_rich(question, &mut ctx)?,
             render_rich(answer, &mut ctx)?,
             render_rich(example, &mut ctx)?,
+        ],
+        CardKindSpec::Reversed {
+            front,
+            back,
+            example,
+        } => vec![
+            render_rich(front, &mut ctx)?,
+            render_rich(back, &mut ctx)?,
+            match example {
+                Some(e) => render_rich(e, &mut ctx)?,
+                None => String::new(),
+            },
         ],
         CardKindSpec::TypeIn { question, answer } => {
             vec![render_rich(question, &mut ctx)?, answer.clone()]

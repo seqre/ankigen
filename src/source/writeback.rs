@@ -24,8 +24,12 @@ pub fn inject_ids(input: &str, parsed: &ParsedFile, upgrade_source: bool) -> Opt
         let Some(id) = c.spec.id.as_deref() else {
             continue;
         };
-        // Only the ambiguous `q:/a:` kind persists its resolved note type.
-        let is_basic_kind = matches!(c.spec.kind, CardKindSpec::Basic { .. });
+        // The ambiguous `q:/a:` kind persists its resolved note type, and so
+        // does `q:/r:`, so a later `r:` ⇄ `a:` swap is caught, not orphaned.
+        let is_basic_kind = matches!(
+            c.spec.kind,
+            CardKindSpec::Basic { .. } | CardKindSpec::Reversed { .. }
+        );
         let model = || c.resolved_model.expect("model resolved before write-back");
 
         if !c.id_present {
@@ -74,6 +78,20 @@ mod tests {
 
     use super::*;
     use crate::source::cards;
+
+    #[test]
+    fn reversed_card_is_pinned() {
+        let src = "q: hello\nr: hola\n";
+        let mut pf = cards::parse(src, Path::new("t")).unwrap();
+        pf.cards[0].spec.id = Some("01XYZ".into());
+        pf.cards[0].resolved_model = Some(ModelKey::Reversed);
+
+        let out = inject_ids(src, &pf, false).unwrap();
+        assert_eq!(out, "// @id 01XYZ model=reversed\nq: hello\nr: hola\n");
+
+        let pf2 = cards::parse(&out, Path::new("t")).unwrap();
+        assert!(inject_ids(&out, &pf2, false).is_none());
+    }
 
     #[test]
     fn injects_then_idempotent() {

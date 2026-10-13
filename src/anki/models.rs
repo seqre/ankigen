@@ -1,4 +1,4 @@
-//! The four frozen note models.
+//! The five frozen note models.
 //!
 //! Each model's id is a hardcoded constant (generated once via
 //! `random.randrange(1 << 30, 1 << 31)`). **These ids and the field lists must
@@ -12,6 +12,7 @@ pub const MODEL_BASIC: i64 = 1_116_934_346;
 pub const MODEL_BASIC_EXAMPLE: i64 = 1_163_615_497;
 pub const MODEL_CLOZE: i64 = 1_748_340_386;
 pub const MODEL_TYPEIN: i64 = 1_284_618_157;
+pub const MODEL_REVERSED: i64 = 1_851_392_596;
 
 pub fn model_id(key: ModelKey) -> i64 {
     match key {
@@ -19,6 +20,7 @@ pub fn model_id(key: ModelKey) -> i64 {
         ModelKey::BasicExample => MODEL_BASIC_EXAMPLE,
         ModelKey::Cloze => MODEL_CLOZE,
         ModelKey::TypeIn => MODEL_TYPEIN,
+        ModelKey::Reversed => MODEL_REVERSED,
     }
 }
 
@@ -90,6 +92,27 @@ pub fn build(key: ModelKey) -> Model {
         )
         .css(CSS)
         .sort_field_index(2),
+
+        ModelKey::Reversed => Model::new(
+            MODEL_REVERSED,
+            "ankigen Basic+Reversed",
+            vec![
+                Field::new("Front"),
+                Field::new("Back"),
+                Field::new("Example"),
+                Field::new("ID"),
+            ],
+            vec![
+                Template::new("Forward").qfmt("{{Front}}").afmt(
+                    r#"{{FrontSide}}<hr id="answer">{{Back}}{{#Example}}<div class="extra">{{Example}}</div>{{/Example}}"#,
+                ),
+                Template::new("Reverse").qfmt("{{Back}}").afmt(
+                    r#"{{FrontSide}}<hr id="answer">{{Front}}{{#Example}}<div class="extra">{{Example}}</div>{{/Example}}"#,
+                ),
+            ],
+        )
+        .css(CSS)
+        .sort_field_index(3),
 
         ModelKey::Cloze => Model::new(
             MODEL_CLOZE,

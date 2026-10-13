@@ -119,16 +119,18 @@ enum Marker {
     A,
     E,
     T,
+    R,
     Tags,
     Topic,
 }
 
 fn marker(line: &str) -> Option<(Marker, &str)> {
-    const TABLE: [(&str, Marker); 6] = [
+    const TABLE: [(&str, Marker); 7] = [
         ("q:", Marker::Q),
         ("a:", Marker::A),
         ("e:", Marker::E),
         ("t:", Marker::T),
+        ("r:", Marker::R),
         ("tags:", Marker::Tags),
         ("topic:", Marker::Topic),
     ];
@@ -176,7 +178,7 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
     let mut id_span: Option<SourceSpan> = None;
     let mut id_syntax: Option<IdSyntax> = None;
 
-    let (mut q, mut a, mut e, mut t) = (None, None, None, None);
+    let (mut q, mut a, mut e, mut t, mut r) = (None, None, None, None, None);
     let mut topic: Option<String> = None;
     let mut card_tags: Vec<String> = Vec::new();
     let mut cur: Option<Marker> = None;
@@ -226,7 +228,9 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
                         None => {
                             return Err(line_err(
                                 &format!("unknown `model={tok}` in the `@id` comment"),
-                                Some("expected `model=basic` or `model=basic-example`"),
+                                Some(
+                                    "expected `model=basic`, `model=basic-example` or `model=reversed`",
+                                ),
                             ));
                         }
                     }
@@ -269,6 +273,10 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
                 set(&mut t, v, "t:")?;
                 cur = Some(Marker::T);
             }
+            Some((Marker::R, v)) => {
+                set(&mut r, v, "r:")?;
+                cur = Some(Marker::R);
+            }
             Some((Marker::Tags, v)) => {
                 card_tags.extend(v.split_whitespace().map(str::to_string));
                 cur = Some(Marker::Tags);
@@ -282,9 +290,10 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
                 Some(Marker::A) => append(&mut a, line),
                 Some(Marker::E) => append(&mut e, line),
                 Some(Marker::T) => append(&mut t, line),
+                Some(Marker::R) => append(&mut r, line),
                 _ => {
                     return Err(err(
-                        "expected a marker (`q:`, `a:`, `e:`, `t:`, `topic:`, `tags:`)",
+                        "expected a marker (`q:`, `a:`, `r:`, `e:`, `t:`, `topic:`, `tags:`)",
                         Some("every card starts with `q:`"),
                     ));
                 }
@@ -294,7 +303,7 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
 
     // No question ⇒ either a directive block or an error.
     let Some(q) = q else {
-        if a.is_some() || t.is_some() || e.is_some() {
+        if a.is_some() || t.is_some() || r.is_some() || e.is_some() {
             return Err(err("card has fields but no `q:`", Some("add a `q:` line")));
         }
         if topic.is_some() || !card_tags.is_empty() {
@@ -317,15 +326,31 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
     }
 
     let kind = if cloze::has_shorthand_cloze(&q) || cloze::has_native_cloze(&q) {
-        if a.is_some() || t.is_some() {
+        if a.is_some() || t.is_some() || r.is_some() {
             return Err(err(
-                "a cloze card cannot also have `a:`/`t:`",
+                "a cloze card cannot also have `a:`/`t:`/`r:`",
                 Some("cloze cards use only `q:` (plus an optional `e:`)"),
             ));
         }
         CardKindSpec::Cloze {
             text: q,
             back_extra: e.filter(|s| !s.trim().is_empty()),
+        }
+    } else if let Some(r) = r {
+        if a.is_some() || t.is_some() {
+            return Err(err(
+                "use only one of `a:`, `t:` or `r:` in a card",
+                Some("`r:` replaces `a:` to make the card work both ways"),
+            ));
+        }
+        // Anki generates no reverse card from an empty back.
+        if r.trim().is_empty() {
+            return Err(err("`r:` is empty", None));
+        }
+        CardKindSpec::Reversed {
+            front: q,
+            back: r,
+            example: e.filter(|s| !s.trim().is_empty()),
         }
     } else if let Some(t) = t {
         if a.is_some() {
@@ -349,7 +374,7 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
     } else {
         return Err(err(
             "card has `q:` but no answer",
-            Some("add `a:` (basic), `t:` (type-in), or use `==cloze==`"),
+            Some("add `a:` (basic), `r:` (both ways), `t:` (type-in), or use `==cloze==`"),
         ));
     };
 
@@ -517,5 +542,39 @@ mod tests {
     #[test]
     fn topic_on_card_errors() {
         assert!(parse("q: Q\na: A\ntopic: X\n", &PathBuf::from("t")).is_err());
+    }
+
+    #[test]
+    fn r_marker_makes_a_reversed_card() {
+        let f = parse_str("q: hello\nr: hola\nmundo\n\nq: cat\nr: gato\ne: El gato duerme.\n");
+        assert_eq!(
+            f.cards[0].spec.kind,
+            CardKindSpec::Reversed {
+                front: "hello".into(),
+                back: "hola\nmundo".into(),
+                example: None,
+            }
+        );
+        assert_eq!(
+            f.cards[1].spec.kind,
+            CardKindSpec::Reversed {
+                front: "cat".into(),
+                back: "gato".into(),
+                example: Some("El gato duerme.".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn r_marker_excludes_other_answers() {
+        for src in [
+            "q: Q\na: A\nr: R\n",
+            "q: Q\nt: T\nr: R\n",
+            "q: ==x==\nr: R\n",
+            "q: Q\nr:\n",
+            "r: R\n",
+        ] {
+            assert!(parse(src, &PathBuf::from("t")).is_err(), "{src:?}");
+        }
     }
 }

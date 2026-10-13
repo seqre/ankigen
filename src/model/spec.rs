@@ -35,6 +35,14 @@ pub enum CardKindSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         back_extra: Option<String>,
     },
+    /// A two-way card: one note, a forward (front → back) and a reverse
+    /// (back → front) card.
+    Reversed {
+        front: String,
+        back: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        example: Option<String>,
+    },
     TypeIn {
         question: String,
         /// Plain text: Anki's `{{type:Answer}}` compares literally.
@@ -49,11 +57,12 @@ impl CardKindSpec {
             CardKindSpec::BasicExample { .. } => ModelKey::BasicExample,
             CardKindSpec::Cloze { .. } => ModelKey::Cloze,
             CardKindSpec::TypeIn { .. } => ModelKey::TypeIn,
+            CardKindSpec::Reversed { .. } => ModelKey::Reversed,
         }
     }
 }
 
-/// Stable discriminator for the four note types. Its [`ModelKey::as_str`]
+/// Stable discriminator for the five note types. Its [`ModelKey::as_str`]
 /// values are **frozen** — they namespace the GUID and feed the note type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModelKey {
@@ -61,6 +70,7 @@ pub enum ModelKey {
     BasicExample,
     Cloze,
     TypeIn,
+    Reversed,
 }
 
 impl ModelKey {
@@ -70,6 +80,7 @@ impl ModelKey {
             ModelKey::BasicExample => "basic-example",
             ModelKey::Cloze => "cloze",
             ModelKey::TypeIn => "type-in",
+            ModelKey::Reversed => "reversed",
         }
     }
 
@@ -80,6 +91,7 @@ impl ModelKey {
             "basic-example" => Some(ModelKey::BasicExample),
             "cloze" => Some(ModelKey::Cloze),
             "type-in" => Some(ModelKey::TypeIn),
+            "reversed" => Some(ModelKey::Reversed),
             _ => None,
         }
     }

@@ -18,7 +18,7 @@ src/
   render/     winnow inline grammar (inline.rs), cloze expansion (cloze.rs),
               block grouping + HTML (mod.rs)
   id/         ULID card ids, the `ankigen::<model>::<ulid>` GUID, deck-id minting
-  anki/       the 4 frozen genanki models + note builder
+  anki/       the 5 frozen genanki models + note builder
   media/      blake3 content-hash basenames
   deck/ (deck.rs)  directory-derived deck paths + per-directory deck-id.txt
   pipeline.rs orchestration; cli.rs (clap); error.rs (miette diagnostics)
@@ -33,7 +33,7 @@ tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
 - **Model ids and field lists are frozen** (`anki/models.rs`). Changing a model
   id, a `ModelKey::as_str()`, or a field list orphans every existing note.
 - **Write-back is insert + one-time `model=` pin, atomic, idempotent.** `// @id`
-  goes at the *start* of a block. A `q:`/`a:` card's id line also carries a
+  goes at the *start* of a block. A `q:`/`a:` or `q:`/`r:` card's id line also carries a
   `model=<key>` suffix; legacy bare-`@id` cards get this suffix added by a single
   in-place line rewrite on first rebuild. Legacy `<!-- @id … -->` lines are
   still parsed and are only converted to `// @id` under `--upgrade-source`
@@ -44,6 +44,9 @@ tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
   card's note type — never re-infer it from `id_present` (that flag flips to
   true after the first build and would orphan cards). The legacy `Basic` model
   is kept only for cards minted before the unification (`model=basic`).
+- **`q:`/`r:` is a two-way card on the Basic+Reversed model** (one note, two
+  templates), always pinned `model=reversed`. `resolve_models` rejects a card
+  that switches between `r:` and a one-way marker after its id was minted.
 - **Deck ids live in `deck-id.txt` per directory** and card ids in `@id`. Both
   are committed by users; treat them as source of truth.
 

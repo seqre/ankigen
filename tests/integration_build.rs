@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
-use ankigen::anki::models::{MODEL_BASIC, MODEL_BASIC_EXAMPLE, MODEL_CLOZE};
+use ankigen::anki::models::{MODEL_BASIC, MODEL_BASIC_EXAMPLE, MODEL_CLOZE, MODEL_REVERSED};
 use ankigen::pipeline::{BuildOptions, build};
 
 struct NoteRow {
@@ -13,6 +13,27 @@ struct NoteRow {
     mid: i64,
     tags: String,
     flds: String,
+}
+
+/// The template ordinals of every card in the apkg, sorted.
+fn read_card_ords(apkg: &Path) -> Vec<i64> {
+    let file = std::fs::File::open(apkg).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let mut bytes = Vec::new();
+    archive
+        .by_name("collection.anki2")
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+
+    let mut db = tempfile::NamedTempFile::new().unwrap();
+    db.write_all(&bytes).unwrap();
+    db.flush().unwrap();
+
+    let conn = rusqlite::Connection::open(db.path()).unwrap();
+    let mut stmt = conn.prepare("SELECT ord FROM cards ORDER BY ord").unwrap();
+    let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
 }
 
 /// Extract `collection.anki2` from the apkg zip and read all notes.
@@ -281,5 +302,56 @@ fn all_missing_media_reported_together() {
             assert_eq!(errors.len(), 3);
         }
         other => panic!("expected MissingMediaBatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn reversed_card_makes_one_note_with_two_cards() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    let note_file = cards.join("vocab.cards");
+    std::fs::write(&note_file, "q: hello\nr: hola\ne: ¡Hola, amigo!\n").unwrap();
+    let out = tmp.path().join("deck.apkg");
+
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+
+    let notes = read_notes(&out);
+    assert_eq!(notes.len(), 1, "one note");
+    assert_eq!(notes[0].mid, MODEL_REVERSED);
+    assert!(notes[0].guid.starts_with("ankigen::reversed::"));
+    let flds: Vec<&str> = notes[0].flds.split('\x1f').collect();
+    assert_eq!(flds[..3], ["hello", "hola", "¡Hola, amigo!"]);
+    assert_eq!(read_card_ords(&out), [0, 1], "forward + reverse cards");
+
+    // The id line is pinned, and a rebuild leaves the source byte-identical.
+    let text = std::fs::read_to_string(&note_file).unwrap();
+    assert!(text.starts_with("// @id ") && text.contains(" model=reversed\nq: hello\n"));
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+    assert_eq!(std::fs::read_to_string(&note_file).unwrap(), text);
+    assert_eq!(read_notes(&out)[0].guid, notes[0].guid);
+}
+
+#[test]
+fn switching_between_one_way_and_two_way_is_rejected() {
+    let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    for src in [
+        // An existing one-way card (pinned, or with a bare id) gaining `r:`.
+        format!("// @id {id} model=basic-example\nq: Q\nr: R\n"),
+        format!("// @id {id}\nq: Q\nr: R\n"),
+        // An existing two-way card losing `r:`.
+        format!("// @id {id} model=reversed\nq: Q\na: A\n"),
+        format!("// @id {id} model=reversed\nq: Q\nt: A\n"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let cards = tmp.path().join("cards");
+        std::fs::create_dir_all(&cards).unwrap();
+        let note_file = cards.join("a.cards");
+        std::fs::write(&note_file, &src).unwrap();
+        let out = tmp.path().join("deck.apkg");
+
+        let res = build(std::slice::from_ref(&cards), &build_opts(&out));
+        assert!(res.is_err(), "{src:?} must not silently orphan the note");
+        assert_eq!(std::fs::read_to_string(&note_file).unwrap(), src);
     }
 }

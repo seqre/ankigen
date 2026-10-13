@@ -32,12 +32,20 @@ field continues onto following lines until the next marker or a blank line.
 |---|---|
 | `q:` + `a:` | Basic + Example (empty example) |
 | `q:` + `a:` + `e:` | Basic + Example |
+| `q:` + `r:` (optional `e:`) | Basic + Reversed — two cards, `q` → `r` and `r` → `q` |
 | `q:` + `t:` | Type-in (`{{type:Answer}}`) |
 | `q:` with `==…==` or `{{c1::…}}` | Cloze (optional `e:` → *Back Extra*) |
 
 `q:`+`a:` and `q:`+`a:`+`e:` share one note type, so adding or removing an
 example never duplicates the card. (Cards built by older ankigen versions stay
 on the legacy *Basic* note type — see below.)
+
+`r:` replaces `a:` to make a card that works **both ways**: one note, reviewed
+as `q` → `r` and as `r` → `q` (an `e:` example shows on the back of both). It
+suits term pairs (`q: hello` / `r: hola`) rather than full questions. A card
+can't switch between `a:`/`t:` and `r:` once it has an `@id` — Anki won't
+change a note's type — so the build stops and asks you to remove the `@id`
+line, which starts a new card.
 
 ```
 topic: Networking
@@ -57,6 +65,9 @@ e: Establishes a connection before data flows.
 
 q: Type the HTTP "OK" status code
 t: 200
+
+q: DNS
+r: Domain Name System
 
 q: Star topology
 a: [image:A star network:img/star.png]
@@ -136,9 +147,10 @@ cards/CS/networking.md  (topic: Networking) → deck  CS::Networking
 `ankigen` writes two kinds of id back into your source tree. **Commit them to
 version control** so your decks stay stable across machines and rebuilds:
 
-- `// @id ULID` — one per card, at the top of its block. A `q:`/`a:`
-  card also carries a `model=<key>` suffix (`// @id ULID model=basic-example`)
-  pinning its note type so it can never silently change. The older
+- `// @id ULID` — one per card, at the top of its block. A `q:`/`a:` or
+  `q:`/`r:` card also carries a `model=<key>` suffix (`// @id ULID
+  model=basic-example`, `model=reversed`) pinning its note type so it can
+  never silently change. The older
   `<!-- @id … -->` spelling is still read; `--upgrade-source` rewrites it to
   `// @id …` (same id, so the GUID and review history are unchanged).
 - `deck-id.txt` — one per directory, mapping deck path → a stable deck id.
@@ -146,8 +158,8 @@ version control** so your decks stay stable across machines and rebuilds:
 Deleting an id starts that card/deck fresh (the old one is orphaned in Anki).
 The note GUID is simply `ankigen::<model>::<ulid>`.
 
-> **Note types are frozen.** The four models (Basic, Basic+Example, Type-in,
-> Cloze) have fixed ids and field lists. Anki refuses to update notes whose note
+> **Note types are frozen.** The five models (Basic, Basic+Example, Basic+Reversed,
+> Type-in, Cloze) have fixed ids and field lists. Anki refuses to update notes whose note
 > type changed, so these never change. New `q:`/`a:` cards use *Basic+Example*;
 > the *Basic* model is retained only so decks built by earlier versions keep
 > updating in place. On the first rebuild after upgrading, each legacy `q:`/`a:`
@@ -178,6 +190,6 @@ line-pointed diagnostic).
 
 ## Status / limitations
 
-v1 supports four card types; multiple-choice and LaTeX are out of scope (Anki's
+v1 supports five card types; multiple-choice and LaTeX are out of scope (Anki's
 native `\(…\)` MathJax passes through if hand-written). Built on the
 [`genanki-rs`](https://github.com/bwkimmel/genanki-rs) fork.
