@@ -5,9 +5,16 @@
 //! and `\` escapes. Cloze (`==…==`) is handled *before* this step (see
 //! [`super::cloze`]), so it is not part of this grammar.
 
-use winnow::combinator::{alt, delimited, preceded};
+use std::ops::Range;
+
+use winnow::combinator::{alt, delimited, preceded, repeat};
+use winnow::stream::LocatingSlice;
 use winnow::token::{any, take_until, take_while};
 use winnow::{ModalResult, Parser};
+
+/// The grammar's input: a `&str` that knows its offset, so [`parse_inlines_spanned`]
+/// can report where each node sits.
+type Input<'a> = LocatingSlice<&'a str>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inline {
@@ -45,14 +52,21 @@ fn is_special(c: char) -> bool {
 /// Parse a field fragment into inline nodes. The grammar always makes progress,
 /// so this consumes the whole input.
 pub fn parse_inlines(input: &str) -> Vec<Inline> {
-    let mut s = input;
-    let nodes: Vec<Inline> = winnow::combinator::repeat(0.., element)
-        .parse_next(&mut s)
-        .unwrap_or_default();
-    merge_text(nodes)
+    let nodes = parse_inlines_spanned(input);
+    merge_text(nodes.into_iter().map(|(n, _)| n).collect())
 }
 
-fn element(input: &mut &str) -> ModalResult<Inline> {
+/// Like [`parse_inlines`], but pairs each top-level node with its byte range
+/// in `input` (and leaves adjacent `Text` nodes unmerged). The children of a
+/// `Bold`/`Italic` node were parsed from the range minus its delimiters.
+pub fn parse_inlines_spanned(input: &str) -> Vec<(Inline, Range<usize>)> {
+    let mut s = LocatingSlice::new(input);
+    repeat(0.., element.with_span())
+        .parse_next(&mut s)
+        .unwrap_or_default()
+}
+
+fn element(input: &mut Input<'_>) -> ModalResult<Inline> {
     alt((
         escaped,
         '\n'.value(Inline::Break),
@@ -75,37 +89,37 @@ fn element(input: &mut &str) -> ModalResult<Inline> {
     .parse_next(input)
 }
 
-fn escaped(input: &mut &str) -> ModalResult<Inline> {
+fn escaped(input: &mut Input<'_>) -> ModalResult<Inline> {
     preceded('\\', any)
         .map(|c: char| Inline::Text(c.to_string()))
         .parse_next(input)
 }
 
-fn text_run(input: &mut &str) -> ModalResult<Inline> {
+fn text_run(input: &mut Input<'_>) -> ModalResult<Inline> {
     take_while(1.., |c: char| !is_special(c))
         .map(|s: &str| Inline::Text(s.to_string()))
         .parse_next(input)
 }
 
-fn bold(input: &mut &str) -> ModalResult<Inline> {
+fn bold(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("**", take_until(0.., "**"), "**")
         .map(|inner: &str| Inline::Bold(parse_inlines(inner)))
         .parse_next(input)
 }
 
-fn italic(input: &mut &str) -> ModalResult<Inline> {
+fn italic(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("*", take_until(0.., "*"), "*")
         .map(|inner: &str| Inline::Italic(parse_inlines(inner)))
         .parse_next(input)
 }
 
-fn code(input: &mut &str) -> ModalResult<Inline> {
+fn code(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("`", take_until(0.., "`"), "`")
         .map(|inner: &str| Inline::Code(inner.to_string()))
         .parse_next(input)
 }
 
-fn display_math(input: &mut &str) -> ModalResult<Inline> {
+fn display_math(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("$$", take_until(0.., "$$"), "$$")
         .map(|inner: &str| Inline::Math {
             source: inner.to_string(),
@@ -114,7 +128,7 @@ fn display_math(input: &mut &str) -> ModalResult<Inline> {
         .parse_next(input)
 }
 
-fn inline_math(input: &mut &str) -> ModalResult<Inline> {
+fn inline_math(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("$", take_until(0.., "$"), "$")
         .map(|inner: &str| Inline::Math {
             source: inner.to_string(),
@@ -123,7 +137,7 @@ fn inline_math(input: &mut &str) -> ModalResult<Inline> {
         .parse_next(input)
 }
 
-fn link(input: &mut &str) -> ModalResult<Inline> {
+fn link(input: &mut Input<'_>) -> ModalResult<Inline> {
     (
         delimited("[", take_until(0.., "]"), "]"),
         delimited("(", take_until(0.., ")"), ")"),
@@ -135,7 +149,7 @@ fn link(input: &mut &str) -> ModalResult<Inline> {
         .parse_next(input)
 }
 
-fn image(input: &mut &str) -> ModalResult<Inline> {
+fn image(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("[image:", take_until(0.., "]"), "]")
         .map(|inner: &str| {
             let (caption, path) = split_caption_path(inner);
@@ -144,7 +158,7 @@ fn image(input: &mut &str) -> ModalResult<Inline> {
         .parse_next(input)
 }
 
-fn sound(input: &mut &str) -> ModalResult<Inline> {
+fn sound(input: &mut Input<'_>) -> ModalResult<Inline> {
     delimited("[sound:", take_until(0.., "]"), "]")
         .map(|inner: &str| Inline::Sound {
             path: inner.to_string(),

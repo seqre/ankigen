@@ -327,7 +327,7 @@ fn discover(paths: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>> {
     Ok(out)
 }
 
-fn has_card_ext(f: &Path) -> bool {
+pub(crate) fn has_card_ext(f: &Path) -> bool {
     matches!(
         f.extension().and_then(|e| e.to_str()),
         Some("md") | Some("cards")

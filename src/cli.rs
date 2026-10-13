@@ -19,6 +19,8 @@ pub struct Cli {
 pub enum Command {
     /// Parse sources, assign ids, write them back, and emit a .apkg.
     Build(BuildArgs),
+    /// Run the language server (LSP over stdio) for editors.
+    Lsp,
 }
 
 #[derive(Args)]

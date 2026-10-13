@@ -8,6 +8,7 @@
 pub mod cloze;
 pub mod inline;
 
+use std::ops::Range;
 use std::path::Path;
 
 use crate::error::{AnkigenError, Result};
@@ -15,6 +16,8 @@ use crate::media::MediaResolver;
 use crate::model::SourceSpan;
 
 use inline::{Inline, parse_inlines};
+
+pub use inline::parse_inlines_spanned;
 
 /// Per-field rendering context (carries the bits needed for media resolution
 /// and for building located diagnostics).
@@ -31,8 +34,7 @@ pub struct RenderCtx<'a> {
 
 /// Render a normal field (question, answer, example, back-extra).
 pub fn render_rich(field: &str, ctx: &mut RenderCtx) -> Result<String> {
-    let blocks = group_blocks(field);
-    render_blocks(&blocks, ctx)
+    render_blocks(field, ctx)
 }
 
 /// Render a cloze field: expand `==…==` first, then render normally.
@@ -46,52 +48,73 @@ pub fn render_cloze(field: &str, ctx: &mut RenderCtx) -> Result<String> {
             Some("use one style or the other within a single card"),
         )
     })?;
-    let blocks = group_blocks(&expanded);
-    render_blocks(&blocks, ctx)
+    render_blocks(&expanded, ctx)
 }
 
-enum Block {
-    Para(String),
-    List { ordered: bool, items: Vec<String> },
-    Code(String),
+/// One block of a field, as byte ranges into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Block {
+    /// Consecutive plain lines; the inline grammar runs over the whole range.
+    Para(Range<usize>),
+    /// Each item's text, list marker excluded.
+    List {
+        ordered: bool,
+        items: Vec<Range<usize>>,
+    },
+    /// A fenced code block: `whole` includes the fence lines, `body` is what
+    /// lies between them.
+    Code {
+        whole: Range<usize>,
+        body: Range<usize>,
+    },
 }
 
-fn flush_para(para: &mut Vec<String>, blocks: &mut Vec<Block>) {
-    if !para.is_empty() {
-        blocks.push(Block::Para(para.join("\n")));
-        para.clear();
+/// Group a field's lines into paragraphs, lists and fenced code blocks.
+pub fn layout(field: &str) -> Vec<Block> {
+    // (start offset, text) of every line.
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in field.split('\n') {
+        lines.push((offset, line));
+        offset += line.len() + 1;
     }
-}
+    let end = |i: usize| lines[i].0 + lines[i].1.len();
+    let item = |i: usize, text: &str| end(i) - text.len()..end(i);
 
-fn group_blocks(field: &str) -> Vec<Block> {
-    let lines: Vec<&str> = field.split('\n').collect();
     let mut blocks = Vec::new();
-    let mut para: Vec<String> = Vec::new();
+    let mut para: Option<Range<usize>> = None;
     let mut i = 0;
     while i < lines.len() {
-        let line = lines[i];
+        let (start, line) = lines[i];
         if line.trim_start().starts_with("```") {
-            flush_para(&mut para, &mut blocks);
-            i += 1;
-            let mut code = Vec::new();
-            while i < lines.len() && lines[i].trim() != "```" {
-                code.push(lines[i]);
+            blocks.extend(para.take().map(Block::Para));
+            let first = i + 1;
+            i = first;
+            while i < lines.len() && lines[i].1.trim() != "```" {
                 i += 1;
             }
+            let body = if i > first {
+                lines[first].0..end(i - 1)
+            } else {
+                end(first - 1)..end(first - 1)
+            };
             if i < lines.len() {
                 i += 1; // consume closing fence
             }
-            blocks.push(Block::Code(code.join("\n")));
+            blocks.push(Block::Code {
+                whole: start..end(i - 1),
+                body,
+            });
             continue;
         }
         if let Some((ordered, text)) = list_item(line) {
-            flush_para(&mut para, &mut blocks);
-            let mut items = vec![text.to_string()];
+            blocks.extend(para.take().map(Block::Para));
+            let mut items = vec![item(i, text)];
             i += 1;
             while i < lines.len() {
-                match list_item(lines[i]) {
+                match list_item(lines[i].1) {
                     Some((o, t)) if o == ordered => {
-                        items.push(t.to_string());
+                        items.push(item(i, t));
                         i += 1;
                     }
                     _ => break,
@@ -101,14 +124,17 @@ fn group_blocks(field: &str) -> Vec<Block> {
             continue;
         }
         if line.trim().is_empty() {
-            flush_para(&mut para, &mut blocks);
+            blocks.extend(para.take().map(Block::Para));
             i += 1;
             continue;
         }
-        para.push(line.to_string());
+        para = Some(match para.take() {
+            Some(p) => p.start..end(i),
+            None => start..end(i),
+        });
         i += 1;
     }
-    flush_para(&mut para, &mut blocks);
+    blocks.extend(para.take().map(Block::Para));
     blocks
 }
 
@@ -127,10 +153,40 @@ fn list_item(line: &str) -> Option<(bool, &str)> {
     None
 }
 
-fn render_blocks(blocks: &[Block], ctx: &mut RenderCtx) -> Result<String> {
+/// Call `f` with every inline node of a field and its byte range in it,
+/// parents before children. Fenced code is not inline syntax and is skipped.
+pub fn walk_inlines(field: &str, f: &mut impl FnMut(&Inline, Range<usize>)) {
+    for block in layout(field) {
+        match block {
+            Block::Para(range) => walk_fragment(field, range, f),
+            Block::List { items, .. } => {
+                for range in items {
+                    walk_fragment(field, range, f);
+                }
+            }
+            Block::Code { .. } => {}
+        }
+    }
+}
+
+fn walk_fragment(field: &str, range: Range<usize>, f: &mut impl FnMut(&Inline, Range<usize>)) {
+    for (node, r) in parse_inlines_spanned(&field[range.clone()]) {
+        let abs = range.start + r.start..range.start + r.end;
+        f(&node, abs.clone());
+        // Children were parsed from the node minus its delimiters.
+        match node {
+            Inline::Bold(_) => walk_fragment(field, abs.start + 2..abs.end - 2, f),
+            Inline::Italic(_) => walk_fragment(field, abs.start + 1..abs.end - 1, f),
+            _ => {}
+        }
+    }
+}
+
+fn render_blocks(field: &str, ctx: &mut RenderCtx) -> Result<String> {
+    let blocks = layout(field);
     // A lone paragraph renders inline (no <p>) for tidy one-liner cards.
-    if let [Block::Para(t)] = blocks {
-        return render_inlines(&parse_inlines(t), ctx);
+    if let [Block::Para(t)] = blocks.as_slice() {
+        return render_inlines(&parse_inlines(&field[t.clone()]), ctx);
     }
     let mut html = String::new();
     for (idx, b) in blocks.iter().enumerate() {
@@ -140,21 +196,21 @@ fn render_blocks(blocks: &[Block], ctx: &mut RenderCtx) -> Result<String> {
         match b {
             Block::Para(t) => {
                 html.push_str("<p>");
-                html.push_str(&render_inlines(&parse_inlines(t), ctx)?);
+                html.push_str(&render_inlines(&parse_inlines(&field[t.clone()]), ctx)?);
                 html.push_str("</p>");
             }
             Block::List { ordered, items } => {
                 html.push_str(if *ordered { "<ol>" } else { "<ul>" });
                 for it in items {
                     html.push_str("<li>");
-                    html.push_str(&render_inlines(&parse_inlines(it), ctx)?);
+                    html.push_str(&render_inlines(&parse_inlines(&field[it.clone()]), ctx)?);
                     html.push_str("</li>");
                 }
                 html.push_str(if *ordered { "</ol>" } else { "</ul>" });
             }
-            Block::Code(c) => {
+            Block::Code { body, .. } => {
                 html.push_str("<pre><code>");
-                html.push_str(&escape_html(c));
+                html.push_str(&escape_html(&field[body.clone()]));
                 html.push_str("</code></pre>");
             }
         }
@@ -315,5 +371,35 @@ mod tests {
     #[test]
     fn math_inside_cloze_survives() {
         assert_eq!(render_cloze_field("==$x^2$=="), "{{c1::\\(x^2\\)}}");
+    }
+
+    #[test]
+    fn layout_ranges_index_the_field() {
+        let f = "intro\nmore\n- a\n- b\n```rust\n// x\n```\n\ntail";
+        let blocks = layout(f);
+        assert_eq!(
+            blocks,
+            [
+                Block::Para(0..10),
+                Block::List {
+                    ordered: false,
+                    items: vec![13..14, 17..18],
+                },
+                Block::Code {
+                    whole: 19..35,
+                    body: 27..31,
+                },
+                Block::Para(37..41),
+            ]
+        );
+        assert_eq!(&f[27..31], "// x");
+        // An unclosed, empty fence still yields in-bounds ranges.
+        assert_eq!(
+            layout("```"),
+            [Block::Code {
+                whole: 0..3,
+                body: 3..3
+            }]
+        );
     }
 }

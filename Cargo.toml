@@ -19,6 +19,9 @@ tempfile = "3.27.0"
 ulid = "1.2.1"
 walkdir = "2.5.0"
 winnow = "1.0.3"
+lsp-server = "0.10.0"
+lsp-types = "0.95"
+serde_json = "1.0.154"
 
 [dev-dependencies]
 assert_fs = "1.1.4"

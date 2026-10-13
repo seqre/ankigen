@@ -1,6 +1,7 @@
 //! Parser output types: cards plus the source locations needed for
 //! diagnostics and id write-back. These are not serialized.
 
+use std::ops::Range;
 use std::path::PathBuf;
 
 use super::spec::{CardSpec, ModelKey};
@@ -77,6 +78,28 @@ pub struct FieldSrc {
     pub pieces: Vec<SourceSpan>,
     /// The value: the `pieces` joined by `\n`.
     pub text: String,
+}
+
+impl FieldSrc {
+    /// Map a byte range of `text` back to the source: one span per line it
+    /// touches.
+    pub fn source_spans(&self, range: Range<usize>) -> Vec<SourceSpan> {
+        let mut spans = Vec::new();
+        let mut start = 0;
+        for piece in &self.pieces {
+            let end = start + piece.byte_len;
+            let (lo, hi) = (range.start.max(start), range.end.min(end));
+            if lo < hi {
+                spans.push(SourceSpan {
+                    byte_start: piece.byte_start + (lo - start),
+                    byte_len: hi - lo,
+                    line_start: piece.line_start,
+                });
+            }
+            start = end + 1;
+        }
+        spans
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

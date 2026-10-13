@@ -5,74 +5,79 @@
 //! inline `` `code` `` span is left literal. Mixing `==` with native
 //! `{{cN::…}}` in one field is rejected.
 
+use std::ops::Range;
+
 #[derive(Debug)]
 pub struct MixedCloze;
 
 /// Replace each `==inner==` with `{{cN::inner}}` (auto-incrementing `N`).
 /// `inner` is copied verbatim, so `==a::hint==` becomes `{{c1::a::hint}}`.
 pub fn expand(field: &str) -> Result<String, MixedCloze> {
-    let native = has_native_cloze(field);
+    let spans = shorthand_spans(field);
+    if !spans.is_empty() && has_native_cloze(field) {
+        return Err(MixedCloze);
+    }
     let mut out = String::with_capacity(field.len());
-    let mut rest = field;
-    let mut n = 1u32;
-    let mut found_auto = false;
+    let mut copied = 0;
+    for (n, span) in spans.iter().enumerate() {
+        out.push_str(&field[copied..span.start]);
+        out.push_str("{{c");
+        out.push_str(&(n + 1).to_string());
+        out.push_str("::");
+        out.push_str(&field[span.start + 2..span.end - 2]);
+        out.push_str("}}");
+        copied = span.end;
+    }
+    out.push_str(&field[copied..]);
+    Ok(out)
+}
+
+/// The byte range of every `==inner==` deletion in `field`, delimiters
+/// included, in order. `==` inside inline code or math is not a deletion.
+pub fn shorthand_spans(field: &str) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let mut pos = 0;
     let mut in_code = false;
 
-    while let Some(ch) = rest.chars().next() {
+    while let Some(ch) = field[pos..].chars().next() {
+        let rest = &field[pos..];
         if ch == '`' {
             in_code = !in_code;
-            out.push('`');
-            rest = &rest[1..];
+            pos += 1;
             continue;
         }
-        // Copy `$…$` / `$$…$$` math verbatim so a body containing `==` (e.g.
+        // Skip `$…$` / `$$…$$` math so a body containing `==` (e.g.
         // `$a == b$`) is not mistaken for a cloze. Mirrors the `in_code` guard.
         if !in_code && ch == '$' {
-            let consumed = copy_math(rest, &mut out);
-            rest = &rest[consumed..];
+            pos += math_len(rest);
             continue;
         }
         if !in_code
             && let Some(after_open) = rest.strip_prefix("==")
             && let Some(close) = after_open.find("==")
         {
-            let inner = &after_open[..close];
-            out.push_str("{{c");
-            out.push_str(&n.to_string());
-            out.push_str("::");
-            out.push_str(inner);
-            out.push_str("}}");
-            n += 1;
-            found_auto = true;
-            rest = &after_open[close + 2..];
+            let end = pos + 2 + close + 2;
+            spans.push(pos..end);
+            pos = end;
             continue;
         }
-        out.push(ch);
-        rest = &rest[ch.len_utf8()..];
+        pos += ch.len_utf8();
     }
-
-    if found_auto && native {
-        return Err(MixedCloze);
-    }
-    Ok(out)
+    spans
 }
 
-/// Copy a `$…$` / `$$…$$` math span from the start of `rest` (which begins with
-/// `$`) into `out`, returning the bytes consumed. If there is no matching
-/// closer, only the opening `$` is copied so the scan can continue past it.
-fn copy_math(rest: &str, out: &mut String) -> usize {
+/// The length of the `$…$` / `$$…$$` math span at the start of `rest` (which
+/// begins with `$`). If there is no matching closer, only the opening `$` is
+/// counted so the scan can continue past it.
+fn math_len(rest: &str) -> usize {
     let (delim, len) = if rest.starts_with("$$") {
         ("$$", 2)
     } else {
         ("$", 1)
     };
-    if let Some(close) = rest[len..].find(delim) {
-        let end = len + close + len;
-        out.push_str(&rest[..end]);
-        end
-    } else {
-        out.push('$');
-        1
+    match rest[len..].find(delim) {
+        Some(close) => len + close + len,
+        None => 1,
     }
 }
 
@@ -159,5 +164,12 @@ mod tests {
     fn cloze_around_math() {
         // A deletion wrapping math keeps the math for the inline stage.
         assert_eq!(expand("==$x^2$==").unwrap(), "{{c1::$x^2$}}");
+    }
+
+    #[test]
+    fn spans_cover_the_delimiters() {
+        let s = "a ==b== `==c==` $x == y$ ==d::hint==";
+        let got: Vec<&str> = shorthand_spans(s).into_iter().map(|r| &s[r]).collect();
+        assert_eq!(got, ["==b==", "==d::hint=="]);
     }
 }

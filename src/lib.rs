@@ -15,6 +15,7 @@ pub mod cli;
 pub mod deck;
 pub mod error;
 pub mod id;
+pub mod lsp;
 pub mod media;
 pub mod model;
 pub mod pipeline;
@@ -41,5 +42,6 @@ pub fn run(cli: cli::Cli) -> Result<()> {
             };
             pipeline::build(&args.paths, &opts)
         }
+        cli::Command::Lsp => lsp::run(),
     }
 }
