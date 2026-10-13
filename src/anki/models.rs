@@ -24,6 +24,23 @@ pub fn model_id(key: ModelKey) -> i64 {
     }
 }
 
+/// A model's field names, in order. Frozen along with the ids.
+pub fn field_names(key: ModelKey) -> &'static [&'static str] {
+    match key {
+        ModelKey::Basic => &["Front", "Back", "ID"],
+        ModelKey::BasicExample | ModelKey::Reversed => &["Front", "Back", "Example", "ID"],
+        ModelKey::Cloze => &["Text", "Back Extra", "ID"],
+        ModelKey::TypeIn => &["Front", "Answer", "ID"],
+    }
+}
+
+fn fields(key: ModelKey) -> Vec<Field> {
+    field_names(key)
+        .iter()
+        .map(|name| Field::new(name))
+        .collect()
+}
+
 const CSS: &str = r#".card {
   font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 20px;
@@ -52,7 +69,7 @@ pub fn build(key: ModelKey) -> Model {
         ModelKey::Basic => Model::new(
             MODEL_BASIC,
             "ankigen Basic",
-            vec![Field::new("Front"), Field::new("Back"), Field::new("ID")],
+            fields(key),
             vec![
                 Template::new("Card 1")
                     .qfmt("{{Front}}")
@@ -65,12 +82,7 @@ pub fn build(key: ModelKey) -> Model {
         ModelKey::BasicExample => Model::new(
             MODEL_BASIC_EXAMPLE,
             "ankigen Basic+Example",
-            vec![
-                Field::new("Front"),
-                Field::new("Back"),
-                Field::new("Example"),
-                Field::new("ID"),
-            ],
+            fields(key),
             vec![
                 Template::new("Card 1").qfmt("{{Front}}").afmt(
                     r#"{{FrontSide}}<hr id="answer">{{Back}}{{#Example}}<div class="extra">{{Example}}</div>{{/Example}}"#,
@@ -83,7 +95,7 @@ pub fn build(key: ModelKey) -> Model {
         ModelKey::TypeIn => Model::new(
             MODEL_TYPEIN,
             "ankigen Type-in",
-            vec![Field::new("Front"), Field::new("Answer"), Field::new("ID")],
+            fields(key),
             vec![
                 Template::new("Card 1")
                     .qfmt(r#"{{Front}}<br>{{type:Answer}}"#)
@@ -96,12 +108,7 @@ pub fn build(key: ModelKey) -> Model {
         ModelKey::Reversed => Model::new(
             MODEL_REVERSED,
             "ankigen Basic+Reversed",
-            vec![
-                Field::new("Front"),
-                Field::new("Back"),
-                Field::new("Example"),
-                Field::new("ID"),
-            ],
+            fields(key),
             vec![
                 Template::new("Forward").qfmt("{{Front}}").afmt(
                     r#"{{FrontSide}}<hr id="answer">{{Back}}{{#Example}}<div class="extra">{{Example}}</div>{{/Example}}"#,
@@ -117,7 +124,7 @@ pub fn build(key: ModelKey) -> Model {
         ModelKey::Cloze => Model::new(
             MODEL_CLOZE,
             "ankigen Cloze",
-            vec![Field::new("Text"), Field::new("Back Extra"), Field::new("ID")],
+            fields(key),
             vec![
                 Template::new("Cloze").qfmt("{{cloze:Text}}").afmt(
                     r#"{{cloze:Text}}{{#Back Extra}}<div class="extra">{{Back Extra}}</div>{{/Back Extra}}"#,
@@ -127,5 +134,61 @@ pub fn build(key: ModelKey) -> Model {
         .css(CSS)
         .model_type(ModelType::Cloze)
         .sort_field_index(2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEYS: [ModelKey; 5] = [
+        ModelKey::Basic,
+        ModelKey::BasicExample,
+        ModelKey::Cloze,
+        ModelKey::TypeIn,
+        ModelKey::Reversed,
+    ];
+
+    // These three tests pin values that existing decks depend on. A failure
+    // means the change orphans notes: revert it, don't update the expectation.
+
+    #[test]
+    fn frozen_model_ids() {
+        let ids: Vec<i64> = KEYS.into_iter().map(model_id).collect();
+        assert_eq!(
+            ids,
+            [
+                1_116_934_346,
+                1_163_615_497,
+                1_748_340_386,
+                1_284_618_157,
+                1_851_392_596
+            ]
+        );
+        for key in KEYS {
+            assert_eq!(build(key).id, model_id(key));
+        }
+    }
+
+    #[test]
+    fn frozen_model_keys() {
+        let keys: Vec<&str> = KEYS.into_iter().map(ModelKey::as_str).collect();
+        assert_eq!(
+            keys,
+            ["basic", "basic-example", "cloze", "type-in", "reversed"]
+        );
+    }
+
+    #[test]
+    fn frozen_field_lists() {
+        let fields: Vec<&[&str]> = KEYS.into_iter().map(field_names).collect();
+        let expected: [&[&str]; 5] = [
+            &["Front", "Back", "ID"],
+            &["Front", "Back", "Example", "ID"],
+            &["Text", "Back Extra", "ID"],
+            &["Front", "Answer", "ID"],
+            &["Front", "Back", "Example", "ID"],
+        ];
+        assert_eq!(fields, expected);
     }
 }
