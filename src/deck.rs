@@ -3,18 +3,28 @@
 //! The Anki deck path comes **only from directories** (file names are ignored),
 //! so many files in one folder merge into one deck. A file's `topic:` adds one
 //! extra subdeck segment. Deck ids are *not* derived — each directory keeps a
-//! `deck-id.txt` mapping deck path → id, minting a fresh random id (same range
-//! as Python's `random.randrange(1 << 30, 1 << 31)`) the first time a deck is
-//! seen, exactly like card `@id`.
+//! `deck-id.txt` holding the id of that directory's deck (`.`) and of each
+//! `topic:` subdeck beneath it (`.::Topic`), minting a fresh random id (same
+//! range as Python's `random.randrange(1 << 30, 1 << 31)`) the first time a
+//! deck is seen, exactly like card `@id`.
+//!
+//! The key is relative to the directory on purpose: the full deck name depends
+//! on the build root and `--deck`, so keying on it would mint a second id for
+//! the same directory whenever either changes. Files written by earlier
+//! versions *were* keyed by full name; those lines are adopted on first use
+//! (see [`DeckRegistry::id_for`]).
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{AnkigenError, Result};
 use crate::id::mint_deck_id;
 use crate::util::atomic_write;
 
 const DECK_ID_FILE: &str = "deck-id.txt";
+/// `deck-id.txt` key of a directory's own deck; topic subdecks hang off it.
+const REL_SELF: &str = ".";
+const REL_PREFIX: &str = ".::";
 
 /// Build the deck path components for a file: optional `--deck` prefix, then the
 /// file's directory components relative to `root`, then the file's `topic:`.
@@ -60,8 +70,22 @@ pub struct DeckRegistry {
 }
 
 struct DirReg {
-    entries: Vec<(String, i64)>, // (deck path, id), order preserved
+    entries: Vec<(String, i64)>, // (directory-relative key, id), order preserved
+    legacy: Vec<(String, i64)>,  // (full deck name, id) lines not yet adopted
     dirty: bool,
+}
+
+/// The `deck-id.txt` key for a directory's own deck (`.`) or one of its
+/// `topic:` subdecks (`.::Topic`).
+fn rel_key(topic: Option<&str>) -> String {
+    match topic {
+        Some(t) => format!("{REL_PREFIX}{t}"),
+        None => REL_SELF.to_string(),
+    }
+}
+
+fn is_rel_key(key: &str) -> bool {
+    key == REL_SELF || key.starts_with(REL_PREFIX)
 }
 
 impl DeckRegistry {
@@ -72,21 +96,72 @@ impl DeckRegistry {
         }
     }
 
-    /// The id for `deck_path`, looked up in `dir`'s `deck-id.txt`, plus whether
-    /// it was freshly minted (`true`) or already known (`false`). Mints +
-    /// records a fresh id if absent.
-    pub fn id_for(&mut self, dir: &Path, deck_path: &str) -> (i64, bool) {
+    /// The id of `dir`'s deck (or of its `topic` subdeck), looked up in
+    /// `dir`'s `deck-id.txt`, plus whether it was freshly minted (`true`) or
+    /// already known (`false`). Mints + records a fresh id if absent.
+    ///
+    /// `deck_name` is the full deck name of this build; it is not a key, only
+    /// a hint for adopting a legacy name-keyed line: one naming exactly this
+    /// deck wins, otherwise any whose last segment is the topic (or the
+    /// directory name). Legacy lines that disagree on the id are an error
+    /// rather than a guess, since picking wrong would orphan a deck.
+    pub fn id_for(
+        &mut self,
+        dir: &Path,
+        topic: Option<&str>,
+        deck_name: &str,
+    ) -> Result<(i64, bool)> {
+        let topic = topic.filter(|t| !t.is_empty());
         let reg = self
             .dirs
             .entry(dir.to_path_buf())
             .or_insert_with(|| load_dir(dir));
-        if let Some((_, id)) = reg.entries.iter().find(|(p, _)| p == deck_path) {
-            return (*id, false);
+        let key = rel_key(topic);
+        if let Some((_, id)) = reg.entries.iter().find(|(k, _)| *k == key) {
+            return Ok((*id, false));
         }
-        let id = mint_deck_id();
-        reg.entries.push((deck_path.to_string(), id));
+
+        let tail = match topic {
+            Some(t) => Some(t.to_string()),
+            None => dir.file_name().map(|n| n.to_string_lossy().to_string()),
+        };
+        let mut adopt: Vec<usize> = (0..reg.legacy.len())
+            .filter(|&i| reg.legacy[i].0 == deck_name)
+            .collect();
+        if adopt.is_empty()
+            && let Some(tail) = tail
+        {
+            let suffix = format!("::{tail}");
+            adopt = (0..reg.legacy.len())
+                .filter(|&i| reg.legacy[i].0 == tail || reg.legacy[i].0.ends_with(&suffix))
+                .collect();
+        }
+
+        let (id, minted) = match adopt.first() {
+            Some(&first) => {
+                let id = reg.legacy[first].1;
+                if adopt.iter().any(|&i| reg.legacy[i].1 != id) {
+                    let mut ids: Vec<i64> = adopt.iter().map(|&i| reg.legacy[i].1).collect();
+                    ids.dedup();
+                    let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
+                    return Err(AnkigenError::AmbiguousDeckId {
+                        file: dir.join(DECK_ID_FILE).display().to_string(),
+                        key,
+                        ids: ids.join(", "),
+                    });
+                }
+                let mut i = 0;
+                reg.legacy.retain(|_| {
+                    i += 1;
+                    !adopt.contains(&(i - 1))
+                });
+                (id, false)
+            }
+            None => (mint_deck_id(), true),
+        };
+        reg.entries.push((key, id));
         reg.dirty = true;
-        (id, true)
+        Ok((id, minted))
     }
 
     /// Write back any directories whose registry gained new decks.
@@ -105,6 +180,7 @@ impl DeckRegistry {
 
 fn load_dir(dir: &Path) -> DirReg {
     let mut entries = Vec::new();
+    let mut legacy = Vec::new();
     if let Ok(content) = std::fs::read_to_string(dir.join(DECK_ID_FILE)) {
         for line in content.lines() {
             let line = line.trim();
@@ -114,12 +190,18 @@ fn load_dir(dir: &Path) -> DirReg {
             if let Some((id_str, name)) = line.split_once(char::is_whitespace)
                 && let Ok(id) = id_str.trim().parse::<i64>()
             {
-                entries.push((name.trim().to_string(), id));
+                let name = name.trim().to_string();
+                if is_rel_key(&name) {
+                    entries.push((name, id));
+                } else {
+                    legacy.push((name, id));
+                }
             }
         }
     }
     DirReg {
         entries,
+        legacy,
         dirty: false,
     }
 }
@@ -128,7 +210,7 @@ fn write_dir(dir: &Path, reg: &DirReg) -> Result<()> {
     let mut s = String::from(
         "# ankigen deck ids — keep this file so your Anki decks stay stable across rebuilds\n",
     );
-    for (name, id) in &reg.entries {
+    for (name, id) in reg.entries.iter().chain(&reg.legacy) {
         s.push_str(&format!("{id}\t{name}\n"));
     }
     atomic_write(&dir.join(DECK_ID_FILE), &s)?;
@@ -138,6 +220,13 @@ fn write_dir(dir: &Path, reg: &DirReg) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("ankigen-deck-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
 
     #[test]
     fn directory_only_path() {
@@ -163,17 +252,89 @@ mod tests {
 
     #[test]
     fn id_for_reports_new_then_existing() {
-        let tmp = std::env::temp_dir().join(format!("ankigen-deck-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = tmp_dir("new");
         let mut reg = DeckRegistry::new(false);
-        let (id1, new1) = reg.id_for(&tmp, "CS");
+        let (id1, new1) = reg.id_for(&tmp, None, "CS").unwrap();
         assert!(new1, "first lookup mints a fresh id");
-        let (id2, new2) = reg.id_for(&tmp, "CS");
+        let (id2, new2) = reg.id_for(&tmp, None, "CS").unwrap();
         assert!(!new2, "second lookup reuses the existing id");
         assert_eq!(id1, id2);
-        let (_, new3) = reg.id_for(&tmp, "CS::Net");
-        assert!(new3, "a different deck path is new again");
+        let (_, new3) = reg.id_for(&tmp, Some("Net"), "CS::Net").unwrap();
+        assert!(new3, "a topic subdeck is new again");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn id_is_independent_of_the_deck_name() {
+        let tmp = tmp_dir("name");
+        let mut reg = DeckRegistry::new(true);
+        let (id, _) = reg.id_for(&tmp, None, "CS").unwrap();
+        let (net, _) = reg.id_for(&tmp, Some("Net"), "CS::Net").unwrap();
+        reg.flush().unwrap();
+        let written = std::fs::read_to_string(tmp.join(DECK_ID_FILE)).unwrap();
+
+        // Another root and a `--deck` prefix rename the deck, not its id.
+        let mut reg = DeckRegistry::new(true);
+        assert_eq!(
+            reg.id_for(&tmp, None, "Exam::Uni::CS").unwrap(),
+            (id, false)
+        );
+        assert_eq!(
+            reg.id_for(&tmp, Some("Net"), "Exam::Uni::CS::Net").unwrap(),
+            (net, false)
+        );
+        reg.flush().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.join(DECK_ID_FILE)).unwrap(),
+            written
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn legacy_name_keyed_lines_are_adopted() {
+        let tmp = tmp_dir("legacy").join("CS");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join(DECK_ID_FILE),
+            "# header\n11\tCS\n11\tUni::CS\n22\tUni::CS::Net\n33\tDefault\n",
+        )
+        .unwrap();
+        let mut reg = DeckRegistry::new(true);
+        // No line names `Other::CS`, so the directory name decides.
+        assert_eq!(reg.id_for(&tmp, None, "Other::CS").unwrap(), (11, false));
+        assert_eq!(
+            reg.id_for(&tmp, Some("Net"), "Other::CS::Net").unwrap(),
+            (22, false)
+        );
+        reg.flush().unwrap();
+        let written = std::fs::read_to_string(tmp.join(DECK_ID_FILE)).unwrap();
+        let lines: Vec<&str> = written.lines().skip(1).collect();
+        // Adopted lines collapse to relative keys; unrelated ones are kept.
+        assert_eq!(lines, ["11\t.", "22\t.::Net", "33\tDefault"]);
+        let _ = std::fs::remove_dir_all(tmp.parent().unwrap());
+    }
+
+    #[test]
+    fn exact_legacy_name_beats_the_directory_name() {
+        let tmp = tmp_dir("exact");
+        std::fs::write(tmp.join(DECK_ID_FILE), "33\tDefault\n").unwrap();
+        let mut reg = DeckRegistry::new(false);
+        assert_eq!(reg.id_for(&tmp, None, "Default").unwrap(), (33, false));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn conflicting_legacy_ids_are_an_error() {
+        let tmp = tmp_dir("conflict").join("CS");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(DECK_ID_FILE), "11\tCS\n12\tUni::CS\n").unwrap();
+        let mut reg = DeckRegistry::new(false);
+        let err = reg.id_for(&tmp, None, "Other::CS").unwrap_err();
+        assert!(matches!(err, AnkigenError::AmbiguousDeckId { .. }));
+        // The build's own name still resolves it.
+        assert_eq!(reg.id_for(&tmp, None, "Uni::CS").unwrap(), (12, false));
+        let _ = std::fs::remove_dir_all(tmp.parent().unwrap());
     }
 
     #[test]

@@ -153,7 +153,11 @@ version control** so your decks stay stable across machines and rebuilds:
   suffix once, on the next build. The older
   `<!-- @id … -->` spelling is still read; `--upgrade-source` rewrites it to
   `// @id …` (same id, so the GUID and review history are unchanged).
-- `deck-id.txt` — one per directory, mapping deck path → a stable deck id.
+- `deck-id.txt` — one per directory, holding a stable deck id for that
+  directory's deck (`.`) and for each `topic:` subdeck in it (`.::Topic`). The
+  id belongs to the directory, not the deck name, so building a subfolder or
+  passing `--deck` never mints a second one. Files from earlier versions, keyed
+  by full deck name, are converted on the next build.
 
 Deleting an id starts that card/deck fresh (the old one is orphaned in Anki).
 The note GUID is simply `ankigen::<model>::<ulid>`.

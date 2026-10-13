@@ -74,7 +74,7 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
         );
         let name = deck::deck_name(&comps);
         let first_seen = !decks.contains_key(&name);
-        let (deck_id, minted) = registry.id_for(dir, &name);
+        let (deck_id, minted) = registry.id_for(dir, l.parsed.topic.as_deref(), &name)?;
         if first_seen {
             report.deck(&name, deck_id, minted);
         }

@@ -55,7 +55,11 @@ tests/lsp.rs                drives the server over an in-memory connection
   whose markers no longer match its `model=` pin (the one exception: `q:`/`a:`
   is valid under both `basic` and `basic-example`), rather than orphaning it.
 - **Deck ids live in `deck-id.txt` per directory** and card ids in `@id`. Both
-  are committed by users; treat them as source of truth.
+  are committed by users; treat them as source of truth. `deck-id.txt` is keyed
+  relative to its directory (`.` = the directory's deck, `.::Topic` = a `topic:`
+  subdeck), never by the full deck name — that depends on the build root and
+  `--deck`. Legacy name-keyed lines are adopted on first use; conflicting ids
+  for one deck are an error, not a guess.
 
 ## Parsing
 

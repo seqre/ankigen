@@ -66,6 +66,19 @@ pub enum AnkigenError {
     )]
     DuplicateId { id: String },
 
+    #[error("{file}: conflicting legacy ids for `{key}` ({ids})")]
+    #[diagnostic(
+        code(ankigen::ambiguous_deck_id),
+        help(
+            "these lines were written under different names for the same deck; keep the id your Anki collection uses and delete the others"
+        )
+    )]
+    AmbiguousDeckId {
+        file: String,
+        key: String,
+        ids: String,
+    },
+
     #[error("{0}")]
     #[diagnostic(code(ankigen::io))]
     Io(String),
