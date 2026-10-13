@@ -20,7 +20,7 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Request as _, SemanticTokensFullRequest};
+use lsp_types::request::{Completion, HoverRequest, Request as _, SemanticTokensFullRequest};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, InitializeParams, InitializeResult, PositionEncodingKind,
     PublishDiagnosticsParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
@@ -70,6 +70,12 @@ pub fn serve(connection: &Connection) -> ServerResult<()> {
     let result = InitializeResult {
         capabilities: ServerCapabilities {
             position_encoding: Some(encoding_kind),
+            hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+            completion_provider: Some(lsp_types::CompletionOptions {
+                // `[image:`, `model=`, and each directory of a media path.
+                trigger_characters: Some(vec![":".into(), "=".into(), "/".into()]),
+                ..Default::default()
+            }),
             semantic_tokens_provider: Some(
                 lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
                     lsp_types::SemanticTokensOptions {
@@ -163,6 +169,14 @@ impl Server<'_> {
                 let p: lsp_types::SemanticTokensParams = serde_json::from_value(req.params)?;
                 serde_json::to_value(self.semantic_tokens(&p.text_document.uri))?
             }
+            HoverRequest::METHOD => {
+                let p: lsp_types::HoverParams = serde_json::from_value(req.params)?;
+                serde_json::to_value(self.hover(p.text_document_position_params))?
+            }
+            Completion::METHOD => {
+                let p: lsp_types::CompletionParams = serde_json::from_value(req.params)?;
+                serde_json::to_value(self.completion(p.text_document_position))?
+            }
             // Say so rather than leave the client waiting.
             _ => {
                 let resp = Response::new_err(
@@ -177,6 +191,50 @@ impl Server<'_> {
         let resp = Response::new_ok(req.id, result);
         self.connection.sender.send(Message::Response(resp))?;
         Ok(())
+    }
+
+    fn hover(&self, at: lsp_types::TextDocumentPositionParams) -> Option<lsp_types::Hover> {
+        let doc = self.docs.get(&at.text_document.uri)?;
+        let offset = doc.index.offset(&doc.text, at.position, self.encoding);
+        let (value, span) = analysis::hover(&doc.analysis, offset)?;
+        let span = span.byte_start..span.byte_start + span.byte_len;
+        Some(lsp_types::Hover {
+            contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value,
+            }),
+            range: Some(doc.index.range(&doc.text, span, self.encoding)),
+        })
+    }
+
+    fn completion(
+        &self,
+        at: lsp_types::TextDocumentPositionParams,
+    ) -> Option<Vec<lsp_types::CompletionItem>> {
+        use analysis::CompletionKind;
+        use lsp_types::CompletionItemKind;
+
+        let doc = self.docs.get(&at.text_document.uri)?;
+        let offset = doc.index.offset(&doc.text, at.position, self.encoding);
+        let items = analysis::complete(&doc.text, &doc.path, offset)
+            .into_iter()
+            .map(|c| lsp_types::CompletionItem {
+                label: c.label,
+                detail: c.detail.map(str::to_string),
+                kind: Some(match c.kind {
+                    CompletionKind::Marker => CompletionItemKind::KEYWORD,
+                    CompletionKind::Model => CompletionItemKind::ENUM_MEMBER,
+                    CompletionKind::File => CompletionItemKind::FILE,
+                    CompletionKind::Dir => CompletionItemKind::FOLDER,
+                }),
+                text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                    range: doc.index.range(&doc.text, c.replace, self.encoding),
+                    new_text: c.insert,
+                })),
+                ..Default::default()
+            })
+            .collect();
+        Some(items)
     }
 
     /// Encode the document's tokens the LSP way: each as five integers,

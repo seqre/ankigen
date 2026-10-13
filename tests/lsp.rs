@@ -85,6 +85,22 @@ impl Client {
         }
     }
 
+    /// The next `n` `publishDiagnostics`, as `(uri, diagnostic count)` sorted
+    /// by uri: the server publishes open documents in no fixed order.
+    fn diagnostic_counts(&self, n: usize) -> Vec<(Url, usize)> {
+        let mut counts = Vec::new();
+        while counts.len() < n {
+            if let Message::Notification(n) = self.recv()
+                && n.method == "textDocument/publishDiagnostics"
+            {
+                let uri = Url::parse(n.params["uri"].as_str().unwrap()).unwrap();
+                counts.push((uri, n.params["diagnostics"].as_array().unwrap().len()));
+            }
+        }
+        counts.sort();
+        counts
+    }
+
     fn open(&self, path: &Path, text: &str) -> Url {
         let uri = Url::from_file_path(path).unwrap();
         self.notify(
@@ -160,21 +176,16 @@ fn duplicate_ids_are_found_across_the_deck_tree() {
     assert_eq!(diags[0].0, 0);
     assert!(diags[0].1.contains("duplicate @id") && diags[0].1.contains("other.cards"));
 
-    // An unsaved edit to the other file clears the error here too.
+    // Opening the other file republishes both: each now blames the other.
     let other = client.open(&tmp.path().join("deck/other.cards"), &card);
-    assert_eq!(client.diagnostics(&other).len(), 1);
-    assert_eq!(client.diagnostics(&a).len(), 1);
+    assert_eq!(
+        client.diagnostic_counts(2),
+        [(other.clone(), 1), (a.clone(), 1)]
+    );
+
+    // An unsaved edit to the other file clears the error in both.
     client.change(&other, 2, "q: Q\nt: 1\n");
-    // Diagnostics for both documents are republished, in no fixed order.
-    let mut cleared = 0;
-    while cleared < 2 {
-        if let Message::Notification(n) = client.recv()
-            && n.method == "textDocument/publishDiagnostics"
-        {
-            assert_eq!(n.params["diagnostics"], json!([]));
-            cleared += 1;
-        }
-    }
+    assert_eq!(client.diagnostic_counts(2), [(other, 0), (a, 0)]);
 }
 
 #[test]
@@ -193,5 +204,35 @@ fn semantic_tokens_are_delta_encoded() {
     assert_eq!(
         tokens["data"],
         json!([0, 0, 2, 1, 0, 0, 6, 5, 12, 0, 1, 0, 2, 1, 0, 0, 3, 3, 9, 0])
+    );
+}
+
+#[test]
+fn hover_and_completion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut client = Client::start();
+    let uri = client.open(&tmp.path().join("a.cards"), "q: hello\nr: hola\n\nto");
+    client.diagnostics(&uri);
+
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } });
+    let hover = client.request("textDocument/hover", at(1, 4));
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("**Basic + Reversed**")
+    );
+    assert_eq!(hover["range"]["end"], json!({ "line": 1, "character": 7 }));
+    assert_eq!(client.request("textDocument/hover", at(3, 1)), Value::Null);
+
+    let items = client.request("textDocument/completion", at(3, 2));
+    assert_eq!(items.as_array().unwrap().len(), 1);
+    assert_eq!(items[0]["label"], "topic:");
+    assert_eq!(
+        items[0]["textEdit"],
+        json!({
+            "range": { "start": { "line": 3, "character": 0 }, "end": { "line": 3, "character": 2 } },
+            "newText": "topic: ",
+        })
     );
 }

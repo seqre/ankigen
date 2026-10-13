@@ -334,7 +334,7 @@ pub(crate) fn has_card_ext(f: &Path) -> bool {
     )
 }
 
-fn is_media_ext(f: &Path) -> bool {
+pub(crate) fn is_media_ext(f: &Path) -> bool {
     f.extension()
         .and_then(|e| e.to_str())
         .map(|e| MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
