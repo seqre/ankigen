@@ -10,15 +10,17 @@
 
 pub mod analysis;
 pub mod text;
+pub mod tokens;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use lsp_server::{Connection, Message, Notification, Request};
+use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _, PublishDiagnostics,
 };
+use lsp_types::request::{Request as _, SemanticTokensFullRequest};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, InitializeParams, InitializeResult, PositionEncodingKind,
     PublishDiagnosticsParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
@@ -33,6 +35,7 @@ use crate::source::cards::parse_lenient;
 
 use analysis::{Analysis, analyze, duplicate_id_diags};
 use text::{Encoding, LineIndex};
+use tokens::{TokenKind, semantic_tokens};
 
 type ServerResult<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -67,6 +70,21 @@ pub fn serve(connection: &Connection) -> ServerResult<()> {
     let result = InitializeResult {
         capabilities: ServerCapabilities {
             position_encoding: Some(encoding_kind),
+            semantic_tokens_provider: Some(
+                lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    lsp_types::SemanticTokensOptions {
+                        legend: lsp_types::SemanticTokensLegend {
+                            token_types: TokenKind::ALL
+                                .iter()
+                                .map(|k| lsp_types::SemanticTokenType::new(k.name()))
+                                .collect(),
+                            token_modifiers: Vec::new(),
+                        },
+                        full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                        ..Default::default()
+                    },
+                ),
+            ),
             text_document_sync: Some(TextDocumentSyncCapability::Options(
                 TextDocumentSyncOptions {
                     open_close: Some(true),
@@ -140,15 +158,49 @@ struct Server<'a> {
 
 impl Server<'_> {
     fn on_request(&mut self, req: Request) -> ServerResult<()> {
-        // Nothing but shutdown is supported: say so rather than leave the
-        // client waiting.
-        let resp = lsp_server::Response::new_err(
-            req.id,
-            lsp_server::ErrorCode::MethodNotFound as i32,
-            format!("unsupported request: {}", req.method),
-        );
+        let result = match req.method.as_str() {
+            SemanticTokensFullRequest::METHOD => {
+                let p: lsp_types::SemanticTokensParams = serde_json::from_value(req.params)?;
+                serde_json::to_value(self.semantic_tokens(&p.text_document.uri))?
+            }
+            // Say so rather than leave the client waiting.
+            _ => {
+                let resp = Response::new_err(
+                    req.id,
+                    lsp_server::ErrorCode::MethodNotFound as i32,
+                    format!("unsupported request: {}", req.method),
+                );
+                self.connection.sender.send(Message::Response(resp))?;
+                return Ok(());
+            }
+        };
+        let resp = Response::new_ok(req.id, result);
         self.connection.sender.send(Message::Response(resp))?;
         Ok(())
+    }
+
+    /// Encode the document's tokens the LSP way: each as five integers,
+    /// positioned relative to the one before.
+    fn semantic_tokens(&self, uri: &Url) -> Option<lsp_types::SemanticTokens> {
+        let doc = self.docs.get(uri)?;
+        let mut data = Vec::new();
+        let mut prev = lsp_types::Position::new(0, 0);
+        for token in semantic_tokens(&doc.text, &doc.analysis.file) {
+            let range = doc.index.range(&doc.text, token.range, self.encoding);
+            let same_line = range.start.line == prev.line;
+            data.push(lsp_types::SemanticToken {
+                delta_line: range.start.line - prev.line,
+                delta_start: range.start.character - if same_line { prev.character } else { 0 },
+                length: range.end.character - range.start.character,
+                token_type: token.kind.index(),
+                token_modifiers_bitset: 0,
+            });
+            prev = range.start;
+        }
+        Some(lsp_types::SemanticTokens {
+            result_id: None,
+            data,
+        })
     }
 
     fn on_notification(&mut self, n: Notification) -> ServerResult<()> {

@@ -176,3 +176,22 @@ fn duplicate_ids_are_found_across_the_deck_tree() {
         }
     }
 }
+
+#[test]
+fn semantic_tokens_are_delta_encoded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut client = Client::start();
+    let uri = client.open(&tmp.path().join("a.cards"), "q: é **b**\nt: 200\n");
+    client.diagnostics(&uri);
+
+    let tokens = client.request(
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    // (Δline, Δstart, length, type, modifiers); columns are UTF-8 bytes here.
+    // Types index the legend: 1 keyword, 9 string, 12 strong.
+    assert_eq!(
+        tokens["data"],
+        json!([0, 0, 2, 1, 0, 0, 6, 5, 12, 0, 1, 0, 2, 1, 0, 0, 3, 3, 9, 0])
+    );
+}
