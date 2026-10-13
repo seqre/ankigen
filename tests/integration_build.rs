@@ -71,7 +71,7 @@ fn read_notes(apkg: &Path) -> Vec<NoteRow> {
 fn build_opts(output: &Path) -> BuildOptions {
     BuildOptions {
         output: output.to_path_buf(),
-        deck_prefix: None,
+        deck_root: None,
         check: false,
         write_back: true,
         upgrade_source: false,
@@ -226,7 +226,7 @@ fn check_mode_writes_nothing() {
     let out = tmp.path().join("deck.apkg");
     let opts = BuildOptions {
         output: out.clone(),
-        deck_prefix: None,
+        deck_root: None,
         check: true,
         write_back: true,
         upgrade_source: false,
@@ -433,4 +433,57 @@ fn every_parse_and_pin_error_is_reported_together() {
         ankigen::AnkigenError::Multiple { count, .. } => assert_eq!(count, 2),
         other => panic!("expected Multiple, got {other:?}"),
     }
+}
+
+/// The raw `decks` JSON of the apkg's collection (deck names included).
+fn read_decks_json(apkg: &Path) -> String {
+    let file = std::fs::File::open(apkg).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let mut bytes = Vec::new();
+    archive
+        .by_name("collection.anki2")
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+
+    let mut db = tempfile::NamedTempFile::new().unwrap();
+    db.write_all(&bytes).unwrap();
+    db.flush().unwrap();
+
+    let conn = rusqlite::Connection::open(db.path()).unwrap();
+    conn.query_row("SELECT decks FROM col", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn built_directory_names_the_root_deck_and_deck_flag_renames_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("My Cards");
+    std::fs::create_dir_all(cards.join("CS")).unwrap();
+    std::fs::write(cards.join("top.cards"), "q: Q\na: A\n").unwrap();
+    std::fs::write(cards.join("CS/net.cards"), "topic: Net\n\nq: Q\na: A\n").unwrap();
+    let out = tmp.path().join("deck.apkg");
+
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+    let decks = read_decks_json(&out);
+    assert!(decks.contains("\"My Cards\""), "{decks}");
+    assert!(decks.contains("\"My Cards::CS::Net\""), "{decks}");
+    let ids = std::fs::read_to_string(cards.join("CS/deck-id.txt")).unwrap();
+
+    // `--deck` replaces the directory's name rather than nesting above it.
+    let mut opts = build_opts(&out);
+    opts.deck_root = Some("Renamed".into());
+    build(std::slice::from_ref(&cards), &opts).unwrap();
+    let decks = read_decks_json(&out);
+    assert!(decks.contains("\"Renamed\""), "{decks}");
+    assert!(decks.contains("\"Renamed::CS::Net\""), "{decks}");
+    assert!(!decks.contains("My Cards"), "{decks}");
+
+    // A subdirectory built on its own is its own root, with the same deck id.
+    build(&[cards.join("CS")], &build_opts(&out)).unwrap();
+    assert!(read_decks_json(&out).contains("\"CS::Net\""));
+    assert_eq!(
+        std::fs::read_to_string(cards.join("CS/deck-id.txt")).unwrap(),
+        ids
+    );
 }

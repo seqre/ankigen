@@ -33,8 +33,8 @@ pub struct BuildArgs {
     #[arg(short, long, default_value = "deck.apkg")]
     pub output: PathBuf,
 
-    /// Prefix prepended above the directory-derived decks.
-    #[arg(long)]
+    /// Name of the top deck, in place of the built directory's own name.
+    #[arg(long, value_name = "NAME")]
     pub deck: Option<String>,
 
     /// Parse + validate only: write nothing (no @id, no deck-id.txt, no .apkg).

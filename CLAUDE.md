@@ -57,8 +57,9 @@ tests/lsp.rs                drives the server over an in-memory connection
 - **Deck ids live in `deck-id.txt` per directory** and card ids in `@id`. Both
   are committed by users; treat them as source of truth. `deck-id.txt` is keyed
   relative to its directory (`.` = the directory's deck, `.::Topic` = a `topic:`
-  subdeck), never by the full deck name — that depends on the build root and
-  `--deck`. Legacy name-keyed lines are adopted on first use; conflicting ids
+  subdeck), never by the full deck name — that depends on the build root, whose
+  directory name is the top deck segment unless `--deck` renames it.
+  Legacy name-keyed lines are adopted on first use; conflicting ids
   for one deck are an error, not a guess.
 
 ## Parsing

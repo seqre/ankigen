@@ -34,7 +34,7 @@ pub fn run(cli: cli::Cli) -> Result<()> {
         cli::Command::Build(args) => {
             let opts = pipeline::BuildOptions {
                 output: args.output,
-                deck_prefix: args.deck,
+                deck_root: args.deck,
                 check: args.check,
                 write_back: !args.no_write_back,
                 upgrade_source: args.upgrade_source,

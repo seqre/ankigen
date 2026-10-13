@@ -27,7 +27,8 @@ const MEDIA_EXTS: &[&str] = &[
 
 pub struct BuildOptions {
     pub output: PathBuf,
-    pub deck_prefix: Option<String>,
+    /// Name of the top deck, replacing the built directory's own name.
+    pub deck_root: Option<String>,
     /// Parse + validate only: no write-back, no `.apkg`.
     pub check: bool,
     /// Persist minted card ids and `deck-id.txt`.
@@ -66,11 +67,16 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
     for l in &loaded {
         let file = &l.parsed.path;
         let dir = file.parent().unwrap_or_else(|| Path::new("."));
+        // `--deck` renames the root; otherwise the root directory names it.
+        let root_name = match &opts.deck_root {
+            Some(name) => Some(name.clone()),
+            None => deck::root_name(&l.root),
+        };
         let comps = deck::deck_components(
             file,
             &l.root,
             l.parsed.topic.as_deref(),
-            opts.deck_prefix.as_deref(),
+            root_name.as_deref(),
         );
         let name = deck::deck_name(&comps);
         let first_seen = !decks.contains_key(&name);

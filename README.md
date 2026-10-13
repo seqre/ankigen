@@ -134,12 +134,20 @@ The deck path comes **only from directory structure** — file names are ignored
 so you can split a topic across many files and they merge:
 
 ```
-cards/CS/lesson1.md   (no topic)            → deck  CS
-cards/CS/lesson2.md   (no topic)            → deck  CS   (merged)
-cards/CS/networking.md  (topic: Networking) → deck  CS::Networking
+cards/CS/lesson1.md   (no topic)            → deck  cards::CS
+cards/CS/lesson2.md   (no topic)            → deck  cards::CS   (merged)
+cards/CS/networking.md  (topic: Networking) → deck  cards::CS::Networking
 ```
 
-`--deck PREFIX` prepends a top segment above the whole tree.
+The directory you build is the top deck: `ankigen build cards` puts the decks
+above under `cards::` (`cards::CS`, `cards::CS::Networking`), and cards directly
+in `cards/` go in `cards` itself. A file passed on its own is built as part of
+its directory. `--deck NAME` replaces that top name, for when the directory is
+not called what the deck should be: `ankigen build cards --deck "My cards"`
+gives `My cards::CS`.
+
+Building a subdirectory makes *it* the top deck (`ankigen build cards/CS` →
+`CS`), so build from the same directory each time to keep deck names stable.
 
 ## Identity — commit these files
 
@@ -175,7 +183,7 @@ The note GUID is simply `ankigen::<model>::<ulid>`.
 ankigen build <paths...> [options]
 
   -o, --output <FILE>   output .apkg (default: deck.apkg)
-      --deck <PREFIX>   deck prefix prepended above the tree
+      --deck <NAME>     top deck name (default: the built directory's name)
       --check           parse + validate only; write nothing
       --no-write-back   build + emit, but don't persist ids into sources
       --upgrade-source  also rewrite legacy syntax to its canonical form

@@ -26,16 +26,31 @@ const DECK_ID_FILE: &str = "deck-id.txt";
 const REL_SELF: &str = ".";
 const REL_PREFIX: &str = ".::";
 
-/// Build the deck path components for a file: optional `--deck` prefix, then the
-/// file's directory components relative to `root`, then the file's `topic:`.
+/// The name of the build root `root` as the top deck segment: its directory
+/// name, resolved through the filesystem for paths like `.` or `..` that do
+/// not spell one (an empty path is the current directory). `None` only for a
+/// root with no name at all (e.g. `/`).
+pub fn root_name(root: &Path) -> Option<String> {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string());
+    let here = if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    };
+    name(root).or_else(|| name(&std::fs::canonicalize(here).ok()?))
+}
+
+/// Build the deck path components for a file: the `top` segment (the build
+/// root's name, or its `--deck` replacement), then the file's directory
+/// components relative to `root`, then the file's `topic:`.
 pub fn deck_components(
     file: &Path,
     root: &Path,
     topic: Option<&str>,
-    prefix: Option<&str>,
+    top: Option<&str>,
 ) -> Vec<String> {
     let mut comps = Vec::new();
-    if let Some(p) = prefix.filter(|p| !p.is_empty()) {
+    if let Some(p) = top.filter(|p| !p.is_empty()) {
         comps.push(p.to_string());
     }
     if let Some(parent) = file.parent()
@@ -234,9 +249,27 @@ mod tests {
             Path::new("cards/CS/lesson1.md"),
             Path::new("cards"),
             None,
-            None,
+            root_name(Path::new("cards")).as_deref(),
         );
-        assert_eq!(deck_name(&comps), "CS");
+        assert_eq!(deck_name(&comps), "cards::CS");
+    }
+
+    #[test]
+    fn root_name_is_the_directory_name() {
+        assert_eq!(
+            root_name(Path::new("a/My Deck")).as_deref(),
+            Some("My Deck")
+        );
+        assert_eq!(
+            root_name(Path::new("a/My Deck/")).as_deref(),
+            Some("My Deck")
+        );
+        // `.` spells no name, so it is resolved to the real directory.
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            root_name(Path::new(".")),
+            cwd.file_name().map(|n| n.to_string_lossy().to_string())
+        );
     }
 
     #[test]
@@ -338,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_and_root_file() {
+    fn deck_flag_names_the_root() {
         let comps = deck_components(
             Path::new("cards/top.md"),
             Path::new("cards"),
