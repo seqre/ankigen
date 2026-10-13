@@ -217,15 +217,7 @@ The server never edits your files: ids are still minted by `ankigen build`.
 ### Neovim (0.11+)
 
 ```lua
-vim.filetype.add({
-  extension = {
-    cards = 'ankigen',
-    -- Markdown inside a deck tree is a card file, not prose.
-    md = function(path)
-      return vim.fs.root(path, 'deck-id.txt') and 'ankigen' or 'markdown'
-    end,
-  },
-})
+vim.filetype.add({ extension = { cards = 'ankigen' } })
 
 vim.lsp.config('ankigen', {
   cmd = { 'ankigen', 'lsp' },
@@ -247,17 +239,9 @@ vim.api.nvim_set_hl(0, '@lsp.type.emphasis.ankigen', { italic = true })
 vim.api.nvim_set_hl(0, '@lsp.type.cloze.ankigen', { link = 'Special' })
 ```
 
-The server attaches to:
-
-- every `.cards` file, anywhere — including a new deck that has never been
-  built;
-- `.md` files inside a deck tree, i.e. with a `deck-id.txt` in their directory
-  or one above it (`ankigen build` writes that file). They get the `ankigen`
-  filetype, so Markdown highlighting and plugins stay out of the way.
-
-Any other `.md` file is left as ordinary Markdown. A new `.md` card file is
-therefore plain Markdown until its directory has been built once; name it
-`.cards` to have the server from the first line.
+The server attaches to every `.cards` file, anywhere — including a new deck
+that has never been built. Card files named `.md` build fine but stay plain
+Markdown in the editor.
 
 The other token types are standard (`keyword`, `comment`, `string`, …) and
 take your colour scheme's colours. If your scheme clears highlights when it
