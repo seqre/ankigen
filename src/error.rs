@@ -66,7 +66,7 @@ pub enum AnkigenError {
     )]
     DuplicateId { id: String },
 
-    #[error("{file}: conflicting legacy ids for `{key}` ({ids})")]
+    #[error("{file}: conflicting legacy ids for {deck} ({ids})")]
     #[diagnostic(
         code(ankigen::ambiguous_deck_id),
         help(
@@ -75,7 +75,7 @@ pub enum AnkigenError {
     )]
     AmbiguousDeckId {
         file: String,
-        key: String,
+        deck: String,
         ids: String,
     },
 

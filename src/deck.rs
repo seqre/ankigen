@@ -3,10 +3,10 @@
 //! The Anki deck path comes **only from directories** (file names are ignored),
 //! so many files in one folder merge into one deck. A file's `topic:` adds one
 //! extra subdeck segment. Deck ids are *not* derived — each directory keeps a
-//! `deck-id.txt` holding the id of that directory's deck (`.`) and of each
-//! `topic:` subdeck beneath it (`.::Topic`), minting a fresh random id (same
-//! range as Python's `random.randrange(1 << 30, 1 << 31)`) the first time a
-//! deck is seen, exactly like card `@id`.
+//! `deck-id.txt` holding the id of that directory's deck (a bare `<id>` line)
+//! and of each `topic:` subdeck beneath it (`<id>::Topic`), minting a fresh
+//! random id (same range as Python's `random.randrange(1 << 30, 1 << 31)`) the
+//! first time a deck is seen, exactly like card `@id`.
 //!
 //! The key is relative to the directory on purpose: the full deck name depends
 //! on the build root and `--deck`, so keying on it would mint a second id for
@@ -22,9 +22,6 @@ use crate::id::mint_deck_id;
 use crate::util::atomic_write;
 
 const DECK_ID_FILE: &str = "deck-id.txt";
-/// `deck-id.txt` key of a directory's own deck; topic subdecks hang off it.
-const REL_SELF: &str = ".";
-const REL_PREFIX: &str = ".::";
 
 /// The name of the build root `root` as the top deck segment: its directory
 /// name, resolved through the filesystem for paths like `.` or `..` that do
@@ -85,22 +82,9 @@ pub struct DeckRegistry {
 }
 
 struct DirReg {
-    entries: Vec<(String, i64)>, // (directory-relative key, id), order preserved
-    legacy: Vec<(String, i64)>,  // (full deck name, id) lines not yet adopted
+    entries: Vec<(Option<String>, i64)>, // (topic, or None for the directory's deck; id)
+    legacy: Vec<(String, i64)>,          // (full deck name, id) lines not yet adopted
     dirty: bool,
-}
-
-/// The `deck-id.txt` key for a directory's own deck (`.`) or one of its
-/// `topic:` subdecks (`.::Topic`).
-fn rel_key(topic: Option<&str>) -> String {
-    match topic {
-        Some(t) => format!("{REL_PREFIX}{t}"),
-        None => REL_SELF.to_string(),
-    }
-}
-
-fn is_rel_key(key: &str) -> bool {
-    key == REL_SELF || key.starts_with(REL_PREFIX)
 }
 
 impl DeckRegistry {
@@ -131,8 +115,7 @@ impl DeckRegistry {
             .dirs
             .entry(dir.to_path_buf())
             .or_insert_with(|| load_dir(dir));
-        let key = rel_key(topic);
-        if let Some((_, id)) = reg.entries.iter().find(|(k, _)| *k == key) {
+        if let Some((_, id)) = reg.entries.iter().find(|(t, _)| t.as_deref() == topic) {
             return Ok((*id, false));
         }
 
@@ -161,7 +144,10 @@ impl DeckRegistry {
                     let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
                     return Err(AnkigenError::AmbiguousDeckId {
                         file: dir.join(DECK_ID_FILE).display().to_string(),
-                        key,
+                        deck: match topic {
+                            Some(t) => format!("topic `{t}`"),
+                            None => "this directory's deck".to_string(),
+                        },
                         ids: ids.join(", "),
                     });
                 }
@@ -174,7 +160,7 @@ impl DeckRegistry {
             }
             None => (mint_deck_id(), true),
         };
-        reg.entries.push((key, id));
+        reg.entries.push((topic.map(str::to_string), id));
         reg.dirty = true;
         Ok((id, minted))
     }
@@ -202,15 +188,18 @@ fn load_dir(dir: &Path) -> DirReg {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if let Some((id_str, name)) = line.split_once(char::is_whitespace)
-                && let Ok(id) = id_str.trim().parse::<i64>()
+            // `<id>` or `<id>::<topic>`; anything else with a leading id is a
+            // legacy `<id> <full deck name>` line.
+            if let Ok(id) = line.parse::<i64>() {
+                entries.push((None, id));
+            } else if let Some((id_str, topic)) = line.split_once("::")
+                && let Ok(id) = id_str.parse::<i64>()
             {
-                let name = name.trim().to_string();
-                if is_rel_key(&name) {
-                    entries.push((name, id));
-                } else {
-                    legacy.push((name, id));
-                }
+                entries.push((Some(topic.to_string()), id));
+            } else if let Some((id_str, name)) = line.split_once(char::is_whitespace)
+                && let Ok(id) = id_str.parse::<i64>()
+            {
+                legacy.push((name.trim().to_string(), id));
             }
         }
     }
@@ -225,7 +214,13 @@ fn write_dir(dir: &Path, reg: &DirReg) -> Result<()> {
     let mut s = String::from(
         "# ankigen deck ids — keep this file so your Anki decks stay stable across rebuilds\n",
     );
-    for (name, id) in reg.entries.iter().chain(&reg.legacy) {
+    for (topic, id) in &reg.entries {
+        match topic {
+            Some(t) => s.push_str(&format!("{id}::{t}\n")),
+            None => s.push_str(&format!("{id}\n")),
+        }
+    }
+    for (name, id) in &reg.legacy {
         s.push_str(&format!("{id}\t{name}\n"));
     }
     atomic_write(&dir.join(DECK_ID_FILE), &s)?;
@@ -343,8 +338,8 @@ mod tests {
         reg.flush().unwrap();
         let written = std::fs::read_to_string(tmp.join(DECK_ID_FILE)).unwrap();
         let lines: Vec<&str> = written.lines().skip(1).collect();
-        // Adopted lines collapse to relative keys; unrelated ones are kept.
-        assert_eq!(lines, ["11\t.", "22\t.::Net", "33\tDefault"]);
+        // Adopted lines collapse to the bare-id form; unrelated ones are kept.
+        assert_eq!(lines, ["11", "22::Net", "33\tDefault"]);
         let _ = std::fs::remove_dir_all(tmp.parent().unwrap());
     }
 
