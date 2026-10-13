@@ -36,7 +36,7 @@ pub struct ParsedCard {
     /// Which comment syntax the existing `@id` line uses, if present.
     pub id_syntax: Option<IdSyntax>,
     /// The `model=<key>` suffix parsed from the `@id` comment, if present. This
-    /// is the durable, source-of-truth note type for ambiguous `q:/a:` cards.
+    /// is the durable, source-of-truth note type; write-back adds it to every card.
     pub model_marker: Option<ModelKey>,
     /// The note type resolved for this card by the pipeline (see
     /// `pipeline::resolve_models`). `None` until resolved.

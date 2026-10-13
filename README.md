@@ -37,15 +37,14 @@ field continues onto following lines until the next marker or a blank line.
 | `q:` with `==…==` or `{{c1::…}}` | Cloze (optional `e:` → *Back Extra*) |
 
 `q:`+`a:` and `q:`+`a:`+`e:` share one note type, so adding or removing an
-example never duplicates the card. (Cards built by older ankigen versions stay
+example never duplicates the card. Any other change of card type on a card
+that already has an `@id` (say `a:` → `t:`) stops the build: Anki won't change
+a note's type, so remove the `@id` line to start a new card. (Cards built by older ankigen versions stay
 on the legacy *Basic* note type — see below.)
 
 `r:` replaces `a:` to make a card that works **both ways**: one note, reviewed
 as `q` → `r` and as `r` → `q` (an `e:` example shows on the back of both). It
-suits term pairs (`q: hello` / `r: hola`) rather than full questions. A card
-can't switch between `a:`/`t:` and `r:` once it has an `@id` — Anki won't
-change a note's type — so the build stops and asks you to remove the `@id`
-line, which starts a new card.
+suits term pairs (`q: hello` / `r: hola`) rather than full questions.
 
 ```
 topic: Networking
@@ -147,10 +146,11 @@ cards/CS/networking.md  (topic: Networking) → deck  CS::Networking
 `ankigen` writes two kinds of id back into your source tree. **Commit them to
 version control** so your decks stay stable across machines and rebuilds:
 
-- `// @id ULID` — one per card, at the top of its block. A `q:`/`a:` or
-  `q:`/`r:` card also carries a `model=<key>` suffix (`// @id ULID
-  model=basic-example`, `model=reversed`) pinning its note type so it can
-  never silently change. The older
+- `// @id ULID model=<key>` — one per card, at the top of its block. The
+  `model=<key>` suffix (`basic-example`, `reversed`, `type-in`, `cloze`, or
+  the legacy `basic`) pins the card's note type so it can never silently
+  change. Cards with a bare `// @id ULID` from earlier versions gain the
+  suffix once, on the next build. The older
   `<!-- @id … -->` spelling is still read; `--upgrade-source` rewrites it to
   `// @id …` (same id, so the GUID and review history are unchanged).
 - `deck-id.txt` — one per directory, mapping deck path → a stable deck id.
@@ -163,7 +163,7 @@ The note GUID is simply `ankigen::<model>::<ulid>`.
 > type changed, so these never change. New `q:`/`a:` cards use *Basic+Example*;
 > the *Basic* model is retained only so decks built by earlier versions keep
 > updating in place. On the first rebuild after upgrading, each legacy `q:`/`a:`
-> card's `@id` line is upgraded once to `model=basic` to pin it.
+> card's bare `@id` line is upgraded once to `model=basic` to pin it.
 
 ## CLI
 

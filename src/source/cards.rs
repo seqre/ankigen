@@ -229,7 +229,7 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
                             return Err(line_err(
                                 &format!("unknown `model={tok}` in the `@id` comment"),
                                 Some(
-                                    "expected `model=basic`, `model=basic-example` or `model=reversed`",
+                                    "expected `basic`, `basic-example`, `reversed`, `type-in` or `cloze`",
                                 ),
                             ));
                         }

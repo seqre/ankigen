@@ -155,62 +155,64 @@ fn mint_and_check_ids(loaded: &mut [Loaded], report: &mut Reporter) -> Result<()
     Ok(())
 }
 
-/// Resolve each card's note type, honoring the durable `model=` marker and
-/// migrating legacy `q:/a:` cards. Only `CardKindSpec::Basic` is ambiguous:
-/// with no marker, a card that already had an `@id` predates the Basic/
-/// Basic+Example unification (⇒ `Basic`), while a brand-new card unifies on
-/// `BasicExample` (rendered with an empty example). The resolved key is the
-/// single source of truth shared by write-back and rendering.
+/// Resolve each card's note type. The `model=` marker on the `@id` line is the
+/// durable source of truth: a pinned card whose markers now describe another
+/// note type is rejected, since Anki refuses to change a note's type and the
+/// swap would orphan it.
 ///
-/// `q:/r:` cards are always pinned `model=reversed`; a card that switches
-/// between `r:` and a one-way marker after its id was minted is rejected.
+/// A card with no marker is either brand new or predates pinning, and takes
+/// the note type its markers describe. Only `q:/a:` is ambiguous there: one
+/// that already had an `@id` predates the Basic/Basic+Example unification
+/// (⇒ `Basic`), while a brand-new one unifies on `BasicExample` (rendered with
+/// an empty example). `r:` postdates pinning, so a bare `@id` under it was
+/// minted for some other note type. The resolved key is shared by write-back
+/// (which pins it) and rendering.
 fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
     for l in loaded.iter_mut() {
         for card in &mut l.parsed.cards {
-            // A two-way note can't become a one-way one (or vice versa): Anki
-            // refuses to change a note's type, so the swap would orphan it.
-            let is_reversed = matches!(card.spec.kind, CardKindSpec::Reversed { .. });
-            let pinned_reversed = card.model_marker == Some(ModelKey::Reversed);
-            let mismatch = if is_reversed && !pinned_reversed && card.id_present {
-                Some((
-                    "`r:` on a card whose `@id` belongs to a one-way note",
-                    "remove the `@id` line to create a new two-way card, or change `r:` back",
-                ))
-            } else if !is_reversed && pinned_reversed {
-                Some((
-                    "card is pinned to `model=reversed` but has no `r:`",
-                    "restore `r:`, or remove the `@id` line to create a new card",
-                ))
-            } else {
-                None
-            };
-            if let Some((msg, help)) = mismatch {
-                return Err(AnkigenError::parse(
+            let fail = |msg: &str, help: &str| {
+                AnkigenError::parse(
                     &l.parsed.path,
                     &l.parsed.text,
                     card.block_span,
                     msg,
                     Some(help),
-                ));
-            }
-            let model = match &card.spec.kind {
-                CardKindSpec::Basic { .. } => match card.model_marker {
-                    Some(m) => m,
-                    None if card.id_present => ModelKey::Basic,
-                    None => ModelKey::BasicExample,
-                },
-                CardKindSpec::BasicExample { .. } if card.model_marker == Some(ModelKey::Basic) => {
-                    return Err(AnkigenError::parse(
-                        &l.parsed.path,
-                        &l.parsed.text,
-                        card.block_span,
+                )
+            };
+            let kind = &card.spec.kind;
+            let natural = match kind {
+                CardKindSpec::Basic { .. } => ModelKey::BasicExample,
+                other => other.model_key(),
+            };
+            let model = match card.model_marker {
+                Some(m) if m == natural => m,
+                Some(ModelKey::Basic) if matches!(kind, CardKindSpec::Basic { .. }) => {
+                    ModelKey::Basic
+                }
+                Some(ModelKey::Basic) if matches!(kind, CardKindSpec::BasicExample { .. }) => {
+                    return Err(fail(
                         "card has an example but is pinned to the legacy Basic note type",
-                        Some(
-                            "remove the `e:` example, or drop the `model=basic` marker to migrate it",
-                        ),
+                        "remove the `e:` example, or drop the `model=basic` marker to migrate it",
                     ));
                 }
-                other => other.model_key(),
+                Some(m) => {
+                    return Err(fail(
+                        &format!(
+                            "card is pinned to `model={}` but its markers now make it a `{}` card",
+                            m.as_str(),
+                            natural.as_str()
+                        ),
+                        "restore the original markers, or remove the `@id` line to create a new card",
+                    ));
+                }
+                None if natural == ModelKey::Reversed && card.id_present => {
+                    return Err(fail(
+                        "`r:` on a card whose `@id` belongs to a one-way note",
+                        "remove the `@id` line to create a new two-way card, or change `r:` back",
+                    ));
+                }
+                None if card.id_present => kind.model_key(),
+                None => natural,
             };
             card.resolved_model = Some(model);
         }

@@ -1,15 +1,15 @@
 //! Idempotent `// @id …` injection, `model=` pinning, and source upgrades.
 //!
 //! Minimal-diff: for each card lacking an id we insert a comment line at the
-//! **start** of its block, and for each legacy `q:/a:` card whose `@id` line
-//! lacks a `model=` suffix we rewrite that one line in place to pin its note
-//! type (a one-time migration). With `upgrade_source`, existing `<!-- @id … -->`
+//! **start** of its block, carrying a `model=` suffix that pins its note type,
+//! and for each legacy card whose `@id` line lacks that suffix we rewrite that
+//! one line in place to add it (a one-time migration). With `upgrade_source`, existing `<!-- @id … -->`
 //! lines are also rewritten to the canonical `// @id …` form. Edits are applied
 //! back-to-front so byte offsets stay valid and every untouched byte is
 //! preserved. Once every card carries its id (and `model=` where needed),
 //! re-running produces no edits — the file is byte-identical.
 
-use crate::model::{CardKindSpec, IdSyntax, ModelKey, ParsedFile};
+use crate::model::{IdSyntax, ModelKey, ParsedFile};
 
 /// Returns the rewritten file with ids injected / model markers pinned (and,
 /// with `upgrade_source`, legacy `<!-- @id -->` lines converted), or `None` if
@@ -24,30 +24,23 @@ pub fn inject_ids(input: &str, parsed: &ParsedFile, upgrade_source: bool) -> Opt
         let Some(id) = c.spec.id.as_deref() else {
             continue;
         };
-        // The ambiguous `q:/a:` kind persists its resolved note type, and so
-        // does `q:/r:`, so a later `r:` ⇄ `a:` swap is caught, not orphaned.
-        let is_basic_kind = matches!(
-            c.spec.kind,
-            CardKindSpec::Basic { .. } | CardKindSpec::Reversed { .. }
-        );
         let model = || c.resolved_model.expect("model resolved before write-back");
 
         if !c.id_present {
-            let line = id_line(id, is_basic_kind.then(model));
             let at = c.block_span.byte_start;
-            edits.push((at, at, format!("{line}{eol}")));
+            edits.push((at, at, format!("{}{eol}", id_line(id, model()))));
             continue;
         }
 
         // Rewrite the existing line to pin a legacy card's note type, or to
-        // upgrade its syntax; an existing `model=` marker is always kept.
-        let pin = is_basic_kind && c.model_marker.is_none();
+        // upgrade its syntax. An existing `model=` marker always equals the
+        // resolved model, so it is kept as is.
+        let pin = c.model_marker.is_none();
         let upgrade = upgrade_source && c.id_syntax == Some(IdSyntax::Html);
         if pin || upgrade {
-            let marker = if pin { Some(model()) } else { c.model_marker };
             let span = c.id_span.expect("id present ⇒ id_span recorded");
             let start = span.byte_start;
-            edits.push((start, start + span.byte_len, id_line(id, marker)));
+            edits.push((start, start + span.byte_len, id_line(id, model())));
         }
     }
 
@@ -65,11 +58,8 @@ pub fn inject_ids(input: &str, parsed: &ParsedFile, upgrade_source: bool) -> Opt
 }
 
 /// The canonical `@id` comment line (without line ending).
-fn id_line(id: &str, model: Option<ModelKey>) -> String {
-    match model {
-        Some(m) => format!("// @id {id} model={}", m.as_str()),
-        None => format!("// @id {id}"),
-    }
+fn id_line(id: &str, model: ModelKey) -> String {
+    format!("// @id {id} model={}", model.as_str())
 }
 
 #[cfg(test)]
@@ -155,7 +145,7 @@ mod tests {
         assert_eq!(
             out,
             "// @id 01AAA model=basic\r\nq: Q\r\na: A\r\n\r\n\
-             // @id 01BBB\r\nq: Q2\r\nt: 200\r\n\r\n\
+             // @id 01BBB model=type-in\r\nq: Q2\r\nt: 200\r\n\r\n\
              // @id 01CCC model=basic-example\r\nq: Q3\r\na: A3\r\n"
         );
 

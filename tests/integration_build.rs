@@ -333,9 +333,13 @@ fn reversed_card_makes_one_note_with_two_cards() {
 }
 
 #[test]
-fn switching_between_one_way_and_two_way_is_rejected() {
+fn changing_a_pinned_cards_note_type_is_rejected() {
     let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     for src in [
+        // A pinned card changing to any other note type.
+        format!("// @id {id} model=basic-example\nq: Q\nt: A\n"),
+        format!("// @id {id} model=type-in\nq: Q\na: A\n"),
+        format!("// @id {id} model=cloze\nq: Q\na: A\n"),
         // An existing one-way card (pinned, or with a bare id) gaining `r:`.
         format!("// @id {id} model=basic-example\nq: Q\nr: R\n"),
         format!("// @id {id}\nq: Q\nr: R\n"),
@@ -354,4 +358,52 @@ fn switching_between_one_way_and_two_way_is_rejected() {
         assert!(res.is_err(), "{src:?} must not silently orphan the note");
         assert_eq!(std::fs::read_to_string(&note_file).unwrap(), src);
     }
+}
+
+#[test]
+fn every_card_is_pinned_and_legacy_ids_gain_the_pin_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    let note_file = cards.join("a.cards");
+    // Bare ids from an earlier ankigen, plus one brand-new card.
+    std::fs::write(
+        &note_file,
+        "// @id 01ARZ3NDEKTSV4RRFFQ69G5FAA\nq: Q1\na: A1\ne: E1\n\n\
+         // @id 01ARZ3NDEKTSV4RRFFQ69G5FAB\nq: Q2\nt: 200\n\n\
+         // @id 01ARZ3NDEKTSV4RRFFQ69G5FAC\nq: A ==cloze==.\n\n\
+         q: Q4\nt: new\n",
+    )
+    .unwrap();
+    let out = tmp.path().join("deck.apkg");
+
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+    let guids: Vec<String> = read_notes(&out).into_iter().map(|n| n.guid).collect();
+    for guid in [
+        "ankigen::basic-example::01ARZ3NDEKTSV4RRFFQ69G5FAA",
+        "ankigen::type-in::01ARZ3NDEKTSV4RRFFQ69G5FAB",
+        "ankigen::cloze::01ARZ3NDEKTSV4RRFFQ69G5FAC",
+    ] {
+        assert!(guids.iter().any(|g| g == guid), "{guid} keeps its GUID");
+    }
+
+    let text = std::fs::read_to_string(&note_file).unwrap();
+    assert!(text.starts_with(
+        "// @id 01ARZ3NDEKTSV4RRFFQ69G5FAA model=basic-example\nq: Q1\na: A1\ne: E1\n\n\
+         // @id 01ARZ3NDEKTSV4RRFFQ69G5FAB model=type-in\nq: Q2\nt: 200\n\n\
+         // @id 01ARZ3NDEKTSV4RRFFQ69G5FAC model=cloze\nq: A ==cloze==.\n\n\
+         // @id "
+    ));
+    assert!(text.ends_with(" model=type-in\nq: Q4\nt: new\n"));
+
+    // Dropping the example from the pinned card keeps its note (and GUID).
+    let edited = text.replace("e: E1\n", "");
+    std::fs::write(&note_file, &edited).unwrap();
+    build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap();
+    assert_eq!(std::fs::read_to_string(&note_file).unwrap(), edited);
+    let mut guids2: Vec<String> = read_notes(&out).into_iter().map(|n| n.guid).collect();
+    let mut guids = guids;
+    guids.sort();
+    guids2.sort();
+    assert_eq!(guids2, guids);
 }

@@ -33,20 +33,22 @@ tests/integration_build.rs  builds an apkg, opens its sqlite, asserts notes
 - **Model ids and field lists are frozen** (`anki/models.rs`). Changing a model
   id, a `ModelKey::as_str()`, or a field list orphans every existing note.
 - **Write-back is insert + one-time `model=` pin, atomic, idempotent.** `// @id`
-  goes at the *start* of a block. A `q:`/`a:` or `q:`/`r:` card's id line also carries a
+  goes at the *start* of a block. Every card's id line also carries a
   `model=<key>` suffix; legacy bare-`@id` cards get this suffix added by a single
   in-place line rewrite on first rebuild. Legacy `<!-- @id … -->` lines are
   still parsed and are only converted to `// @id` under `--upgrade-source`
   (or when a `model=` pin rewrites the line anyway). Once every card has its id (and
   `model=` where due), a rebuild must leave files byte-identical.
 - **`q:`/`a:` (and `q:`/`a:`/`e:`) both use the Basic+Example model for new
-  cards.** The `model=` marker is the durable source of truth for a `q:`/`a:`
+  cards.** The `model=` marker is the durable source of truth for every
   card's note type — never re-infer it from `id_present` (that flag flips to
   true after the first build and would orphan cards). The legacy `Basic` model
   is kept only for cards minted before the unification (`model=basic`).
 - **`q:`/`r:` is a two-way card on the Basic+Reversed model** (one note, two
-  templates), always pinned `model=reversed`. `resolve_models` rejects a card
-  that switches between `r:` and a one-way marker after its id was minted.
+  templates).
+- **A pinned card can't change note type.** `resolve_models` rejects a card
+  whose markers no longer match its `model=` pin (the one exception: `q:`/`a:`
+  is valid under both `basic` and `basic-example`), rather than orphaning it.
 - **Deck ids live in `deck-id.txt` per directory** and card ids in `@id`. Both
   are committed by users; treat them as source of truth.
 
