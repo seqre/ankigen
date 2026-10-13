@@ -4,5 +4,8 @@
 pub mod card;
 pub mod spec;
 
-pub use card::{IdSyntax, MediaKind, ParsedCard, ParsedFile, SourceSpan};
+pub use card::{
+    BlockSyntax, Diag, FieldSrc, IdSyntax, LineKind, Marker, MediaKind, ParsedCard, ParsedFile,
+    SourceSpan, SyntaxLine,
+};
 pub use spec::{CardKindSpec, CardSpec, ModelKey};

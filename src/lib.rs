@@ -10,6 +10,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod anki;
+pub mod check;
 pub mod cli;
 pub mod deck;
 pub mod error;

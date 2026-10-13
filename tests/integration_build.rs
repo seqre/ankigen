@@ -407,3 +407,30 @@ fn every_card_is_pinned_and_legacy_ids_gain_the_pin_once() {
     guids2.sort();
     assert_eq!(guids2, guids);
 }
+
+#[test]
+fn every_parse_and_pin_error_is_reported_together() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cards = tmp.path().join("cards");
+    std::fs::create_dir_all(&cards).unwrap();
+    std::fs::write(cards.join("a.cards"), "q: no answer\n\nq: Q\na: A\nt: T\n").unwrap();
+    std::fs::write(cards.join("b.cards"), "a: no question\n").unwrap();
+    let out = tmp.path().join("deck.apkg");
+    match build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap_err() {
+        ankigen::AnkigenError::Multiple { count, .. } => assert_eq!(count, 3),
+        other => panic!("expected Multiple, got {other:?}"),
+    }
+
+    // Pin mismatches across cards are batched the same way.
+    std::fs::write(
+        cards.join("a.cards"),
+        "// @id 01ARZ3NDEKTSV4RRFFQ69G5FAA model=cloze\nq: Q\na: A\n\n\
+         // @id 01ARZ3NDEKTSV4RRFFQ69G5FAB model=type-in\nq: Q\na: A\n",
+    )
+    .unwrap();
+    std::fs::write(cards.join("b.cards"), "q: Q\na: A\n").unwrap();
+    match build(std::slice::from_ref(&cards), &build_opts(&out)).unwrap_err() {
+        ankigen::AnkigenError::Multiple { count, .. } => assert_eq!(count, 2),
+        other => panic!("expected Multiple, got {other:?}"),
+    }
+}

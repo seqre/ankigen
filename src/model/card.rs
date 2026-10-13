@@ -13,6 +13,96 @@ pub struct SourceSpan {
     pub line_start: u32,
 }
 
+/// A located problem found while parsing or validating a source file. The
+/// build turns these into [`crate::AnkigenError`]s; the language server into
+/// editor diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diag {
+    pub span: SourceSpan,
+    pub message: String,
+    pub help: Option<String>,
+}
+
+/// A column-0 line prefix that starts a field or directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Marker {
+    Q,
+    A,
+    E,
+    T,
+    R,
+    Tags,
+    Topic,
+}
+
+impl Marker {
+    pub const ALL: [Marker; 7] = [
+        Marker::Q,
+        Marker::A,
+        Marker::E,
+        Marker::T,
+        Marker::R,
+        Marker::Tags,
+        Marker::Topic,
+    ];
+
+    /// The marker as written, colon included.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Marker::Q => "q:",
+            Marker::A => "a:",
+            Marker::E => "e:",
+            Marker::T => "t:",
+            Marker::R => "r:",
+            Marker::Tags => "tags:",
+            Marker::Topic => "topic:",
+        }
+    }
+
+    /// A card field (which may continue over following lines), as opposed to
+    /// the single-line `tags:`/`topic:` directives.
+    pub fn is_field(self) -> bool {
+        !matches!(self, Marker::Tags | Marker::Topic)
+    }
+}
+
+/// One marker's value as it sits in the source.
+#[derive(Clone, Debug)]
+pub struct FieldSrc {
+    pub marker: Marker,
+    /// The line carrying the marker.
+    pub marker_span: SourceSpan,
+    /// The source range of each line of the value, in order: the rest of the
+    /// marker line, then every continuation line (comments are skipped).
+    pub pieces: Vec<SourceSpan>,
+    /// The value: the `pieces` joined by `\n`.
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineKind {
+    /// A `//` comment.
+    Comment,
+    /// An `@id` comment, in either spelling.
+    Id,
+}
+
+/// A whole line that is not field content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyntaxLine {
+    pub span: SourceSpan,
+    pub kind: LineKind,
+}
+
+/// The lexical structure of one blank-line-separated block. Recorded for every
+/// block, including ones that failed to parse into a card.
+#[derive(Clone, Debug)]
+pub struct BlockSyntax {
+    pub span: SourceSpan,
+    pub lines: Vec<SyntaxLine>,
+    pub fields: Vec<FieldSrc>,
+}
+
 /// How a card's `@id` comment is spelled in the source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdSyntax {
@@ -51,6 +141,8 @@ pub struct ParsedFile {
     pub topic: Option<String>,
     pub file_tags: Vec<String>,
     pub cards: Vec<ParsedCard>,
+    /// Every block of the file, in order (see [`BlockSyntax`]).
+    pub blocks: Vec<BlockSyntax>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

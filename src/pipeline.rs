@@ -8,6 +8,7 @@ use genanki_rs::{Deck, Note, Package};
 use walkdir::WalkDir;
 
 use crate::anki::build_note;
+use crate::check;
 use crate::deck::{self, DeckRegistry};
 use crate::error::{AnkigenError, Result};
 use crate::id::{guid_for_str, mint_card_id};
@@ -120,16 +121,24 @@ pub fn build(paths: &[PathBuf], opts: &BuildOptions) -> Result<()> {
 
 fn load_all(source: &CardsSource, paths: &[PathBuf], report: &mut Reporter) -> Result<Vec<Loaded>> {
     let mut loaded = Vec::new();
+    // Parse every file before failing, so one run reports all parse errors.
+    let mut errors = Vec::new();
     for (file, root) in discover(paths)? {
         let input = std::fs::read_to_string(&file)
             .map_err(|e| AnkigenError::Io(format!("{}: {e}", file.display())))?;
         report.source_file(&file);
-        let parsed = source.parse(&input, &file)?;
-        loaded.push(Loaded {
-            parsed,
-            root,
-            input,
-        });
+        match source.parse(&input, &file) {
+            Ok(parsed) => loaded.push(Loaded {
+                parsed,
+                root,
+                input,
+            }),
+            Err(AnkigenError::Multiple { errors: e, .. }) => errors.extend(e),
+            Err(e) => errors.push(e),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(AnkigenError::many(errors));
     }
     Ok(loaded)
 }
@@ -155,69 +164,24 @@ fn mint_and_check_ids(loaded: &mut [Loaded], report: &mut Reporter) -> Result<()
     Ok(())
 }
 
-/// Resolve each card's note type. The `model=` marker on the `@id` line is the
-/// durable source of truth: a pinned card whose markers now describe another
-/// note type is rejected, since Anki refuses to change a note's type and the
-/// swap would orphan it.
-///
-/// A card with no marker is either brand new or predates pinning, and takes
-/// the note type its markers describe. Only `q:/a:` is ambiguous there: one
-/// that already had an `@id` predates the Basic/Basic+Example unification
-/// (⇒ `Basic`), while a brand-new one unifies on `BasicExample` (rendered with
-/// an empty example). `r:` postdates pinning, so a bare `@id` under it was
-/// minted for some other note type. The resolved key is shared by write-back
+/// Resolve every card's note type (see [`check::resolve_model`]), reporting
+/// all the cards that fail at once. The resolved key is shared by write-back
 /// (which pins it) and rendering.
 fn resolve_models(loaded: &mut [Loaded]) -> Result<()> {
+    let mut errors = Vec::new();
     for l in loaded.iter_mut() {
         for card in &mut l.parsed.cards {
-            let fail = |msg: &str, help: &str| {
-                AnkigenError::parse(
-                    &l.parsed.path,
-                    &l.parsed.text,
-                    card.block_span,
-                    msg,
-                    Some(help),
-                )
-            };
-            let kind = &card.spec.kind;
-            let natural = match kind {
-                CardKindSpec::Basic { .. } => ModelKey::BasicExample,
-                other => other.model_key(),
-            };
-            let model = match card.model_marker {
-                Some(m) if m == natural => m,
-                Some(ModelKey::Basic) if matches!(kind, CardKindSpec::Basic { .. }) => {
-                    ModelKey::Basic
-                }
-                Some(ModelKey::Basic) if matches!(kind, CardKindSpec::BasicExample { .. }) => {
-                    return Err(fail(
-                        "card has an example but is pinned to the legacy Basic note type",
-                        "remove the `e:` example, or drop the `model=basic` marker to migrate it",
-                    ));
-                }
-                Some(m) => {
-                    return Err(fail(
-                        &format!(
-                            "card is pinned to `model={}` but its markers now make it a `{}` card",
-                            m.as_str(),
-                            natural.as_str()
-                        ),
-                        "restore the original markers, or remove the `@id` line to create a new card",
-                    ));
-                }
-                None if natural == ModelKey::Reversed && card.id_present => {
-                    return Err(fail(
-                        "`r:` on a card whose `@id` belongs to a one-way note",
-                        "remove the `@id` line to create a new two-way card, or change `r:` back",
-                    ));
-                }
-                None if card.id_present => kind.model_key(),
-                None => natural,
-            };
-            card.resolved_model = Some(model);
+            match check::resolve_model(card) {
+                Ok(model) => card.resolved_model = Some(model),
+                Err(d) => errors.push(AnkigenError::from_diag(&l.parsed.path, &l.parsed.text, &d)),
+            }
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(AnkigenError::many(errors))
+    }
 }
 
 fn write_back_ids(

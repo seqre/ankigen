@@ -9,6 +9,7 @@
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
 
+use crate::model::Diag;
 use crate::model::card::SourceSpan as Span;
 
 pub type Result<T> = std::result::Result<T, AnkigenError>;
@@ -44,6 +45,15 @@ pub enum AnkigenError {
     #[error("{count} referenced media file(s) could not be found")]
     #[diagnostic(code(ankigen::missing_media))]
     MissingMediaBatch {
+        count: usize,
+        #[related]
+        errors: Vec<AnkigenError>,
+    },
+
+    /// Several independent errors, reported together so one run surfaces
+    /// everything there is to fix.
+    #[error("{count} errors")]
+    Multiple {
         count: usize,
         #[related]
         errors: Vec<AnkigenError>,
@@ -91,6 +101,29 @@ impl AnkigenError {
             src: NamedSource::new(file.display().to_string(), text.to_string()),
             span: SourceSpan::new(span.byte_start.into(), span.byte_len),
             help: help.map(|h| h.to_string()),
+        }
+    }
+
+    /// Build a [`AnkigenError::Parse`] from a [`Diag`] found in `file`.
+    pub fn from_diag(file: &std::path::Path, text: &str, diag: &Diag) -> Self {
+        Self::parse(
+            file,
+            text,
+            diag.span,
+            diag.message.clone(),
+            diag.help.as_deref(),
+        )
+    }
+
+    /// Collapse a non-empty list of errors into one: the error itself if there
+    /// is only one, otherwise an [`AnkigenError::Multiple`].
+    pub fn many(mut errors: Vec<AnkigenError>) -> Self {
+        if errors.len() == 1 {
+            return errors.remove(0);
+        }
+        AnkigenError::Multiple {
+            count: errors.len(),
+            errors,
         }
     }
 

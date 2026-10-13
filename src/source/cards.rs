@@ -1,31 +1,65 @@
 //! Parser for the native `cards` text format.
 //!
 //! Splits a file into blank-line-separated blocks, reads an optional leading
-//! `// @id …` (or legacy `<!-- @id … -->`), collects `q:`/`a:`/`e:`/`t:` markers (with multi-line
-//! continuation) and `topic:`/`tags:` directives, then infers the card type.
-//! Byte offsets are tracked throughout so diagnostics point at the offending
-//! block. (Inline field syntax is parsed separately by the winnow grammar in
-//! [`crate::render`].)
+//! `// @id …` (or legacy `<!-- @id … -->`), collects `q:`/`a:`/`r:`/`e:`/`t:`
+//! markers (with multi-line continuation) and `topic:`/`tags:` directives, then
+//! infers the card type. Byte offsets are tracked throughout so diagnostics
+//! point at the offending line. (Inline field syntax is parsed separately by
+//! the winnow grammar in [`crate::render`].)
+//!
+//! Parsing recovers per block: a block with a problem yields [`Diag`]s instead
+//! of a card and the scan carries on, so one pass reports every error in a
+//! file. [`parse_lenient`] exposes that (plus the per-block [`BlockSyntax`]
+//! the language server highlights from); [`parse`] is the strict wrapper the
+//! build uses.
 
 use std::path::Path;
 
 use crate::error::{AnkigenError, Result};
 use crate::model::card::SourceSpan;
-use crate::model::{CardKindSpec, CardSpec, IdSyntax, ModelKey, ParsedCard, ParsedFile};
+use crate::model::{
+    BlockSyntax, CardKindSpec, CardSpec, Diag, FieldSrc, IdSyntax, LineKind, Marker, ModelKey,
+    ParsedCard, ParsedFile, SyntaxLine,
+};
 use crate::render::cloze;
 
+/// The outcome of a recovering parse: every card from the blocks that parsed
+/// cleanly, and a [`Diag`] for each problem in the ones that did not.
+pub struct Parsed {
+    pub file: ParsedFile,
+    pub diags: Vec<Diag>,
+}
+
+/// Parse `input`, failing with every problem found (not just the first).
 pub fn parse(input: &str, path: &Path) -> Result<ParsedFile> {
+    let Parsed { file, diags } = parse_lenient(input, path);
+    if diags.is_empty() {
+        return Ok(file);
+    }
+    Err(AnkigenError::many(
+        diags
+            .iter()
+            .map(|d| AnkigenError::from_diag(path, input, d))
+            .collect(),
+    ))
+}
+
+pub fn parse_lenient(input: &str, path: &Path) -> Parsed {
     let mut topic: Option<String> = None;
     let mut file_tags: Vec<String> = Vec::new();
     let mut cards: Vec<ParsedCard> = Vec::new();
+    let mut blocks: Vec<BlockSyntax> = Vec::new();
+    let mut diags: Vec<Diag> = Vec::new();
 
     for block in split_blocks(input) {
-        match parse_block(&block, input, path)? {
-            Outcome::Card(card) => cards.push(card),
-            Outcome::Directive {
+        let (syntax, outcome) = parse_block(&block, &mut diags);
+        blocks.push(syntax);
+        match outcome {
+            Some(Outcome::Card(card)) => cards.push(card),
+            Some(Outcome::Directive {
                 topic: t,
                 tags: mut tg,
-            } => {
+            }) => {
                 if let Some(t) = t
                     && topic.is_none()
                 {
@@ -33,17 +67,21 @@ pub fn parse(input: &str, path: &Path) -> Result<ParsedFile> {
                 }
                 file_tags.append(&mut tg);
             }
-            Outcome::Empty => {}
+            Some(Outcome::Empty) | None => {}
         }
     }
 
-    Ok(ParsedFile {
-        path: path.to_path_buf(),
-        text: input.to_string(),
-        topic,
-        file_tags,
-        cards,
-    })
+    Parsed {
+        file: ParsedFile {
+            path: path.to_path_buf(),
+            text: input.to_string(),
+            topic,
+            file_tags,
+            cards,
+            blocks,
+        },
+        diags,
+    }
 }
 
 struct RawBlock {
@@ -67,11 +105,10 @@ impl RawBlock {
 fn split_blocks(input: &str) -> Vec<RawBlock> {
     let mut blocks = Vec::new();
     let mut offset = 0usize;
-    let mut line_no = 1u32;
     // (start_byte, start_line, end_byte) of the block currently being built.
     let mut cur: Option<(usize, u32, usize)> = None;
 
-    for line in input.split_inclusive('\n') {
+    for (line_no, line) in (1u32..).zip(input.split_inclusive('\n')) {
         let content = line.strip_suffix('\n').unwrap_or(line);
         let blank = content.trim().is_empty();
         if blank {
@@ -91,7 +128,6 @@ fn split_blocks(input: &str) -> Vec<RawBlock> {
             }
         }
         offset += line.len();
-        line_no += 1;
     }
     if let Some((start, sline, end)) = cur.take() {
         blocks.push(RawBlock {
@@ -113,29 +149,9 @@ enum Outcome {
     Empty,
 }
 
-#[derive(Clone, Copy)]
-enum Marker {
-    Q,
-    A,
-    E,
-    T,
-    R,
-    Tags,
-    Topic,
-}
-
 fn marker(line: &str) -> Option<(Marker, &str)> {
-    const TABLE: [(&str, Marker); 7] = [
-        ("q:", Marker::Q),
-        ("a:", Marker::A),
-        ("e:", Marker::E),
-        ("t:", Marker::T),
-        ("r:", Marker::R),
-        ("tags:", Marker::Tags),
-        ("topic:", Marker::Topic),
-    ];
-    for (prefix, m) in TABLE {
-        if let Some(rest) = line.strip_prefix(prefix) {
+    for m in Marker::ALL {
+        if let Some(rest) = line.strip_prefix(m.prefix()) {
             return Some((m, rest.strip_prefix(' ').unwrap_or(rest)));
         }
     }
@@ -148,7 +164,7 @@ fn is_comment(line: &str) -> bool {
     line.starts_with("//")
 }
 
-/// Parse a `// @id <ulid> [model=<key>]` comment (or the legacy
+/// Parse an id comment line (`// @id <ulid> [model=<key>]` or the legacy
 /// `<!-- @id <ulid> [model=<key>] -->`), returning the id, the optional raw
 /// `model=` token, and which syntax was used.
 fn parse_id_comment(line: &str) -> Option<(&str, Option<&str>, IdSyntax)> {
@@ -167,29 +183,35 @@ fn parse_id_comment(line: &str) -> Option<(&str, Option<&str>, IdSyntax)> {
     Some((id, model, syntax))
 }
 
-fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
+fn diag(span: SourceSpan, message: impl Into<String>, help: Option<&str>) -> Diag {
+    Diag {
+        span,
+        message: message.into(),
+        help: help.map(str::to_string),
+    }
+}
+
+/// The `@id` comment of a block, once seen.
+struct IdLine {
+    id: String,
+    span: SourceSpan,
+    syntax: IdSyntax,
+    model: Option<ModelKey>,
+}
+
+/// Scan one block's lines, then classify it. Problems are pushed onto `diags`
+/// (each pointing at the line it concerns) and make the outcome `None`; the
+/// block's syntax is returned either way.
+fn parse_block(block: &RawBlock, diags: &mut Vec<Diag>) -> (BlockSyntax, Option<Outcome>) {
     let span = block.span();
-    let err = |msg: &str, help: Option<&str>| AnkigenError::parse(path, full, span, msg, help);
+    let diags_before = diags.len();
 
     // Optional id comment (before any field), possibly carrying a
     // `model=<key>` suffix.
-    let mut id: Option<String> = None;
-    let mut model_marker: Option<ModelKey> = None;
-    let mut id_span: Option<SourceSpan> = None;
-    let mut id_syntax: Option<IdSyntax> = None;
-
-    let (mut q, mut a, mut e, mut t, mut r) = (None, None, None, None, None);
-    let mut topic: Option<String> = None;
-    let mut card_tags: Vec<String> = Vec::new();
-    let mut cur: Option<Marker> = None;
-
-    let set = |slot: &mut Option<String>, val: &str, name: &str| -> Result<()> {
-        if slot.is_some() {
-            return Err(err(&format!("duplicate `{name}` marker in one card"), None));
-        }
-        *slot = Some(val.to_string());
-        Ok(())
-    };
+    let mut id: Option<IdLine> = None;
+    let mut lines: Vec<SyntaxLine> = Vec::new();
+    let mut fields: Vec<FieldSrc> = Vec::new();
+    let mut stray_reported = false;
 
     // Inside a fenced code block, `//` lines are field content, not comments.
     let mut in_fence = false;
@@ -199,51 +221,61 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
         line_offset += raw.len();
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
+        let line_span = SourceSpan {
+            byte_start,
+            byte_len: line.len(),
+            line_start,
+        };
 
         if !in_fence {
             if let Some((found, model_tok, syntax)) = parse_id_comment(line) {
-                let line_span = SourceSpan {
-                    byte_start,
-                    byte_len: line.len(),
-                    line_start,
-                };
-                let line_err = |msg: &str, help: Option<&str>| {
-                    AnkigenError::parse(path, full, line_span, msg, help)
-                };
-                if cur.is_some() {
-                    return Err(line_err(
+                lines.push(SyntaxLine {
+                    span: line_span,
+                    kind: LineKind::Id,
+                });
+                if !fields.is_empty() {
+                    diags.push(diag(
+                        line_span,
                         "the `@id` comment must come before the card's fields",
                         Some("move this line above `q:`"),
                     ));
-                }
-                if id.is_some() {
-                    return Err(line_err("duplicate `@id` comment in one card", None));
-                }
-                id = Some(found.to_string());
-                id_syntax = Some(syntax);
-                id_span = Some(line_span);
-                if let Some(tok) = model_tok {
-                    match ModelKey::parse(tok) {
-                        Some(m) => model_marker = Some(m),
-                        None => {
-                            return Err(line_err(
-                                &format!("unknown `model={tok}` in the `@id` comment"),
+                } else if id.is_some() {
+                    diags.push(diag(line_span, "duplicate `@id` comment in one card", None));
+                } else {
+                    let model = model_tok.and_then(|tok| {
+                        let model = ModelKey::parse(tok);
+                        if model.is_none() {
+                            diags.push(diag(
+                                line_span,
+                                format!("unknown `model={tok}` in the `@id` comment"),
                                 Some(
                                     "expected `basic`, `basic-example`, `reversed`, `type-in` or `cloze`",
                                 ),
                             ));
                         }
-                    }
+                        model
+                    });
+                    id = Some(IdLine {
+                        id: found.to_string(),
+                        span: line_span,
+                        syntax,
+                        model,
+                    });
                 }
                 continue;
             }
             if is_comment(line) {
+                lines.push(SyntaxLine {
+                    span: line_span,
+                    kind: LineKind::Comment,
+                });
                 continue;
             }
         }
         // A fence may open on the marker line itself (`a: ```rust`), so track
         // it against the field value; a new marker always starts outside one.
-        let content = match marker(line) {
+        let found = marker(line);
+        let content = match found {
             Some((_, v)) => {
                 in_fence = false;
                 v
@@ -256,43 +288,37 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
             content.trim_start().starts_with("```")
         };
 
-        match marker(line) {
-            Some((Marker::Q, v)) => {
-                set(&mut q, v, "q:")?;
-                cur = Some(Marker::Q);
+        match found {
+            Some((m, v)) => {
+                if m.is_field() && fields.iter().any(|f| f.marker == m) {
+                    diags.push(diag(
+                        line_span,
+                        format!("duplicate `{}` marker in one card", m.prefix()),
+                        None,
+                    ));
+                }
+                fields.push(FieldSrc {
+                    marker: m,
+                    marker_span: line_span,
+                    pieces: vec![SourceSpan {
+                        byte_start: byte_start + (line.len() - v.len()),
+                        byte_len: v.len(),
+                        line_start,
+                    }],
+                    text: v.to_string(),
+                });
             }
-            Some((Marker::A, v)) => {
-                set(&mut a, v, "a:")?;
-                cur = Some(Marker::A);
-            }
-            Some((Marker::E, v)) => {
-                set(&mut e, v, "e:")?;
-                cur = Some(Marker::E);
-            }
-            Some((Marker::T, v)) => {
-                set(&mut t, v, "t:")?;
-                cur = Some(Marker::T);
-            }
-            Some((Marker::R, v)) => {
-                set(&mut r, v, "r:")?;
-                cur = Some(Marker::R);
-            }
-            Some((Marker::Tags, v)) => {
-                card_tags.extend(v.split_whitespace().map(str::to_string));
-                cur = Some(Marker::Tags);
-            }
-            Some((Marker::Topic, v)) => {
-                topic = Some(v.trim().to_string());
-                cur = Some(Marker::Topic);
-            }
-            None => match cur {
-                Some(Marker::Q) => append(&mut q, line),
-                Some(Marker::A) => append(&mut a, line),
-                Some(Marker::E) => append(&mut e, line),
-                Some(Marker::T) => append(&mut t, line),
-                Some(Marker::R) => append(&mut r, line),
+            None => match fields.last_mut() {
+                Some(f) if f.marker.is_field() => {
+                    f.text.push('\n');
+                    f.text.push_str(line);
+                    f.pieces.push(line_span);
+                }
+                _ if stray_reported => {}
                 _ => {
-                    return Err(err(
+                    stray_reported = true;
+                    diags.push(diag(
+                        line_span,
                         "expected a marker (`q:`, `a:`, `r:`, `e:`, `t:`, `topic:`, `tags:`)",
                         Some("every card starts with `q:`"),
                     ));
@@ -301,104 +327,151 @@ fn parse_block(block: &RawBlock, full: &str, path: &Path) -> Result<Outcome> {
         }
     }
 
+    let outcome = if diags.len() > diags_before {
+        None
+    } else {
+        match classify(span, id, &fields) {
+            Ok(outcome) => Some(outcome),
+            Err(d) => {
+                diags.push(d);
+                None
+            }
+        }
+    };
+    (
+        BlockSyntax {
+            span,
+            lines,
+            fields,
+        },
+        outcome,
+    )
+}
+
+/// Infer what a cleanly scanned block is from the markers it carries.
+fn classify(
+    span: SourceSpan,
+    id: Option<IdLine>,
+    fields: &[FieldSrc],
+) -> std::result::Result<Outcome, Diag> {
+    let get = |m: Marker| fields.iter().find(|f| f.marker == m);
+    let (q, a, e, t, r) = (
+        get(Marker::Q),
+        get(Marker::A),
+        get(Marker::E),
+        get(Marker::T),
+        get(Marker::R),
+    );
+    let topic = fields.iter().rfind(|f| f.marker == Marker::Topic);
+    let card_tags: Vec<String> = fields
+        .iter()
+        .filter(|f| f.marker == Marker::Tags)
+        .flat_map(|f| f.text.split_whitespace().map(str::to_string))
+        .collect();
+
     // No question ⇒ either a directive block or an error.
     let Some(q) = q else {
-        if a.is_some() || t.is_some() || r.is_some() || e.is_some() {
-            return Err(err("card has fields but no `q:`", Some("add a `q:` line")));
+        if let Some(f) = a.or(t).or(r).or(e) {
+            return Err(diag(
+                f.marker_span,
+                "card has fields but no `q:`",
+                Some("add a `q:` line"),
+            ));
         }
         if topic.is_some() || !card_tags.is_empty() {
             return Ok(Outcome::Directive {
-                topic,
+                topic: topic.map(|f| f.text.trim().to_string()),
                 tags: card_tags,
             });
         }
         return Ok(Outcome::Empty); // e.g. a stray `// @id`
     };
 
-    if topic.is_some() {
-        return Err(err(
+    if let Some(topic) = topic {
+        return Err(diag(
+            topic.marker_span,
             "`topic:` is a file-level directive and cannot be on a card",
             Some("put `topic:` in its own block at the top of the file"),
         ));
     }
-    if q.trim().is_empty() {
-        return Err(err("`q:` is empty", None));
+    if q.text.trim().is_empty() {
+        return Err(diag(q.marker_span, "`q:` is empty", None));
     }
 
-    let kind = if cloze::has_shorthand_cloze(&q) || cloze::has_native_cloze(&q) {
-        if a.is_some() || t.is_some() || r.is_some() {
-            return Err(err(
+    let example = || e.map(|f| f.text.clone()).filter(|s| !s.trim().is_empty());
+    let kind = if cloze::has_shorthand_cloze(&q.text) || cloze::has_native_cloze(&q.text) {
+        if let Some(f) = a.or(t).or(r) {
+            return Err(diag(
+                f.marker_span,
                 "a cloze card cannot also have `a:`/`t:`/`r:`",
                 Some("cloze cards use only `q:` (plus an optional `e:`)"),
             ));
         }
         CardKindSpec::Cloze {
-            text: q,
-            back_extra: e.filter(|s| !s.trim().is_empty()),
+            text: q.text.clone(),
+            back_extra: example(),
         }
     } else if let Some(r) = r {
         if a.is_some() || t.is_some() {
-            return Err(err(
+            return Err(diag(
+                r.marker_span,
                 "use only one of `a:`, `t:` or `r:` in a card",
                 Some("`r:` replaces `a:` to make the card work both ways"),
             ));
         }
         // Anki generates no reverse card from an empty back.
-        if r.trim().is_empty() {
-            return Err(err("`r:` is empty", None));
+        if r.text.trim().is_empty() {
+            return Err(diag(r.marker_span, "`r:` is empty", None));
         }
         CardKindSpec::Reversed {
-            front: q,
-            back: r,
-            example: e.filter(|s| !s.trim().is_empty()),
+            front: q.text.clone(),
+            back: r.text.clone(),
+            example: example(),
         }
     } else if let Some(t) = t {
         if a.is_some() {
-            return Err(err("use either `a:` or `t:`, not both", None));
+            return Err(diag(
+                t.marker_span,
+                "use either `a:` or `t:`, not both",
+                None,
+            ));
         }
         CardKindSpec::TypeIn {
-            question: q,
-            answer: t.trim().to_string(),
+            question: q.text.clone(),
+            answer: t.text.trim().to_string(),
         }
-    } else if let (Some(a), Some(e)) = (a.clone(), e.clone()) {
+    } else if let (Some(a), Some(e)) = (a, e) {
         CardKindSpec::BasicExample {
-            question: q,
-            answer: a,
-            example: e,
+            question: q.text.clone(),
+            answer: a.text.clone(),
+            example: e.text.clone(),
         }
     } else if let Some(a) = a {
         CardKindSpec::Basic {
-            question: q,
-            answer: a,
+            question: q.text.clone(),
+            answer: a.text.clone(),
         }
     } else {
-        return Err(err(
+        return Err(diag(
+            q.marker_span,
             "card has `q:` but no answer",
             Some("add `a:` (basic), `r:` (both ways), `t:` (type-in), or use `==cloze==`"),
         ));
     };
 
-    let id_present = id.is_some();
     Ok(Outcome::Card(ParsedCard {
         spec: CardSpec {
-            id,
+            id: id.as_ref().map(|i| i.id.clone()),
             tags: card_tags,
             kind,
         },
         block_span: span,
-        id_present,
-        id_span,
-        id_syntax,
-        model_marker,
+        id_present: id.is_some(),
+        id_span: id.as_ref().map(|i| i.span),
+        id_syntax: id.as_ref().map(|i| i.syntax),
+        model_marker: id.as_ref().and_then(|i| i.model),
         resolved_model: None,
     }))
-}
-
-fn append(slot: &mut Option<String>, line: &str) {
-    if let Some(s) = slot.as_mut() {
-        s.push('\n');
-        s.push_str(line);
-    }
 }
 
 #[cfg(test)]
@@ -576,5 +649,49 @@ mod tests {
         ] {
             assert!(parse(src, &PathBuf::from("t")).is_err(), "{src:?}");
         }
+    }
+
+    #[test]
+    fn recovers_per_block_and_points_at_the_line() {
+        let src = "q: Q1\na: A1\nr: R1\n\nq: Q2\na: A2\n\nstray\n\nq: Q4\nq: again\na: A4\n";
+        let Parsed { file, diags } = parse_lenient(src, &PathBuf::from("t"));
+        // The one clean block still yields its card.
+        assert_eq!(file.cards.len(), 1);
+        assert_eq!(file.blocks.len(), 4);
+
+        let at: Vec<(u32, &str)> = diags
+            .iter()
+            .map(|d| {
+                let s = d.span;
+                (s.line_start, &src[s.byte_start..s.byte_start + s.byte_len])
+            })
+            .collect();
+        assert_eq!(at, [(3, "r: R1"), (8, "stray"), (11, "q: again")]);
+
+        match parse(src, &PathBuf::from("t")) {
+            Err(AnkigenError::Multiple { count: 3, .. }) => {}
+            other => panic!("expected 3 errors, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn records_field_pieces() {
+        let src = "// @id 01ABC\nq: one\n// note\ntwo\na:\n- x\n";
+        let f = parse_str(src);
+        let block = &f.blocks[0];
+        assert_eq!(
+            block.lines.iter().map(|l| l.kind).collect::<Vec<_>>(),
+            [LineKind::Id, LineKind::Comment]
+        );
+        let q = &block.fields[0];
+        assert_eq!((q.marker, q.text.as_str()), (Marker::Q, "one\ntwo"));
+        let pieces: Vec<&str> = q
+            .pieces
+            .iter()
+            .map(|p| &src[p.byte_start..p.byte_start + p.byte_len])
+            .collect();
+        assert_eq!(pieces, ["one", "two"]);
+        let a = &block.fields[1];
+        assert_eq!((a.pieces[0].byte_len, a.text.as_str()), (0, "\n- x"));
     }
 }
