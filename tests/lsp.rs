@@ -236,3 +236,27 @@ fn hover_and_completion() {
         })
     );
 }
+
+#[test]
+fn missing_media_is_a_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let client = Client::start();
+    let uri = client.open(
+        &tmp.path().join("a.cards"),
+        "q: no answer\n\nq: Q\na: [image:gone.png]\n",
+    );
+    let severities: Vec<u64> = loop {
+        if let Message::Notification(n) = client.recv()
+            && n.method == "textDocument/publishDiagnostics"
+            && n.params["uri"] == uri.as_str()
+        {
+            let diags = n.params["diagnostics"].as_array().unwrap();
+            break diags
+                .iter()
+                .map(|d| d["severity"].as_u64().unwrap())
+                .collect();
+        }
+    };
+    // LSP severities: 1 = error, 2 = warning.
+    assert_eq!(severities, [1, 2]);
+}

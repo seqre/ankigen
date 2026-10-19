@@ -21,6 +21,9 @@ pub struct Analysis {
     /// in source order. Duplicate ids need the other files: see
     /// [`duplicate_id_diags`].
     pub diags: Vec<Diag>,
+    /// Missing media files, in source order. Shown as warnings: `build`
+    /// tolerates them under `--ignore-missing-media`.
+    pub warnings: Vec<Diag>,
 }
 
 pub fn analyze(text: &str, path: &Path) -> Analysis {
@@ -45,12 +48,17 @@ pub fn analyze(text: &str, path: &Path) -> Analysis {
     }
 
     let src_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut warnings = Vec::new();
     for block in &file.blocks {
-        missing_media(block, src_dir, &mut diags);
+        missing_media(block, src_dir, &mut warnings);
     }
 
     diags.sort_by_key(|d| d.span.byte_start);
-    Analysis { file, diags }
+    Analysis {
+        file,
+        diags,
+        warnings,
+    }
 }
 
 /// The block a card was parsed from.
@@ -384,11 +392,18 @@ mod tests {
                     "// @id 01A model=type-in",
                     "card is pinned to `model=type-in` but its markers now make it a `basic-example` card"
                 ),
-                ("gone.png", "media file not found: gone.png"),
                 (
                     "q: {{c1::a}} and ==b==",
                     "cloze field mixes `==…==` shorthand with native `{{c…}}`"
                 ),
+            ]
+        );
+        let got = located(text, &a.warnings);
+        let got: Vec<(&str, &str)> = got.iter().map(|(s, m)| (*s, m.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                ("gone.png", "media file not found: gone.png"),
                 ("nope.mp3", "media file not found: nope.mp3"),
             ]
         );

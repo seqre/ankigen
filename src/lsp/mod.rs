@@ -352,19 +352,20 @@ impl Server<'_> {
     fn publish_all(&self) -> ServerResult<()> {
         for (uri, doc) in &self.docs {
             let duplicates = duplicate_id_diags(&doc.analysis.file, &self.other_ids(doc));
-            let diagnostics = doc
-                .analysis
-                .diags
-                .iter()
-                .chain(&duplicates)
-                .map(|d| self.diagnostic(doc, d))
+            let errors = doc.analysis.diags.iter().chain(&duplicates);
+            let diagnostics = errors
+                .map(|d| self.diagnostic(doc, d, DiagnosticSeverity::ERROR))
+                .chain(
+                    (doc.analysis.warnings.iter())
+                        .map(|d| self.diagnostic(doc, d, DiagnosticSeverity::WARNING)),
+                )
                 .collect();
             self.publish(uri.clone(), Some(doc.version), diagnostics)?;
         }
         Ok(())
     }
 
-    fn diagnostic(&self, doc: &Doc, d: &Diag) -> Diagnostic {
+    fn diagnostic(&self, doc: &Doc, d: &Diag, severity: DiagnosticSeverity) -> Diagnostic {
         let span = d.span.byte_start..d.span.byte_start + d.span.byte_len;
         let message = match &d.help {
             Some(help) => format!("{}\n{help}", d.message),
@@ -372,7 +373,7 @@ impl Server<'_> {
         };
         Diagnostic {
             range: doc.index.range(&doc.text, span, self.encoding),
-            severity: Some(DiagnosticSeverity::ERROR),
+            severity: Some(severity),
             source: Some("ankigen".into()),
             message,
             ..Default::default()
